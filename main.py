@@ -4,103 +4,8 @@
 ================================================================================
  SIMULADOR DE UM SISTEMA OPERACIONAL MULTITAREFA DE TEMPO COMPARTILHADO
  Projeto A - Versão 0.6
+ Feito por Marco Gasparotto e Rafael Monçores
 ================================================================================
-
-Este programa é um único arquivo, autossuficiente (standalone), que utiliza
-APENAS a biblioteca padrão do Python (tkinter para a interface gráfica e
-manipulação nativa de arquivos/strings para o parser e para a exportação SVG).
-
---------------------------------------------------------------------------------
-PREMISSAS ASSUMIDAS (o enunciado não detalha estes pontos e, por isso, as
-decisões de projeto abaixo foram tomadas de forma explícita e documentada,
-para que o comportamento do simulador seja previsível e possa ser revisado):
-
-  1) Formato do campo "lista_eventos" (7º campo de cada tarefa no arquivo de
-     configuração): pares "deslocamento:duracao" separados por vírgula, por
-     exemplo "2:3,7:1". O "deslocamento" é contado em ticks a partir do
-     instante de LIBERAÇÃO de CADA instância da tarefa (ou seja, o mesmo
-     padrão de bloqueios se repete a cada período). Um campo vazio, "-" ou
-     apenas espaços significa "nenhum evento de bloqueio". Ao ser atingido,
-     o evento faz a tarefa entrar no estado "suspensa" pela duração indicada,
-     mesmo que ela estivesse em execução ou apenas pronta.
-
-  2) Significado do campo "prazo": é RELATIVO ao instante de liberação de
-     cada instância. O prazo absoluto de uma instância liberada no tick T é,
-     portanto, T + prazo. Esta é a convenção usual em escalonamento de tempo
-     real (RM/EDF) e é usada tanto para o algoritmo EDF quanto para a
-     detecção de estouro de prazo (deadline miss) em qualquer algoritmo.
-
-  3) Significado do "quantum": é o tempo máximo (em ticks) que uma tarefa
-     pode permanecer executando ININTERRUPTAMENTE antes que o escalonador
-     seja obrigatoriamente reconsultado. Como RM e EDF, por si só, não têm
-     noção de "fatia de tempo" (apenas de prioridade), o quantum é usado
-     aqui como o mecanismo de justiça (fairness) do "tempo compartilhado":
-     ao expirar, a tarefa perde temporariamente a vantagem do critério de
-     desempate nº 1 ("estava executando antes"), permitindo que outra
-     tarefa de MESMA prioridade (mesmo período no RM, ou mesmo prazo
-     absoluto no EDF) assuma a CPU em regime de rodízio (round-robin).
-     Se não houver nenhuma tarefa de prioridade igual/maior disputando,
-     a própria tarefa continua executando normalmente.
-
-  4) Ordem de aplicação dos critérios: os 5 critérios de desempate listados
-     no enunciado são aplicados SOMENTE quando duas ou mais tarefas empatam
-     no critério primário do algoritmo escolhido (menor período no RM, ou
-     menor prazo absoluto no EDF) — é exatamente para isso que servem
-     "critérios de desempate". A chave de ordenação completa usada é:
-         (prioridade_primaria, [1] estava_executando_antes, [2] prazo,
-          [3] ingresso, [4] duração, [5] sorteio-apenas-se-ainda-empatado)
-
-  5) Edição de tarefas/parâmetros durante o modo passo-a-passo: como o
-     simulador é orientado a eventos discretos (o estado de um tick depende
-     de toda a história anterior), uma edição no meio da execução NÃO tenta
-     remendar o estado corrente. Em vez disso, o simulador reconstrói TODA
-     a linha do tempo do zero com a nova definição da tarefa e reposiciona
-     o cursor de exibição no mesmo número de passo em que o usuário estava.
-     Isso evita estados internamente inconsistentes e é equivalente, do
-     ponto de vista do usuário, a "mudar uma característica da tarefa e ver
-     o que teria acontecido".
-
-  6) Atribuição de qual CPU física (CPU0, CPU1, ...) executa qual tarefa
-     selecionada é apenas cosmética/de continuidade visual (tenta manter a
-     tarefa na mesma CPU quando possível, para reduzir "troca de contexto"
-     visual no gráfico). A decisão que realmente implementa RM/EDF e os
-     critérios de desempate é QUAIS tarefas são selecionadas para rodar a
-     cada instante, não em qual CPU especificamente. Uma CPU sem tarefa
-     atribuída é sempre exibida como DESLIGADA (nunca "ociosa"), conforme
-     exigido: se há tarefa pronta, nenhuma CPU pode ficar sem uso.
-
-  7) Exportação SVG: o enunciado exige que a exportação ocorra "ao término
-     da simulação". Por isso, o SVG completo é gerado AUTOMATICAMENTE assim
-     que a simulação chega ao fim (todas as tarefas completam as 10
-     instâncias), salvo como "<nome_do_arquivo_de_configuracao>_gantt.svg"
-     na mesma pasta do arquivo carregado. Também é possível reexportar a
-     qualquer momento (mesmo com a simulação parcial) pelo botão
-     "Exportar SVG...".
-
-  8) Tarefas aperiódicas (campo "periodo" vazio, "0" ou "-") não são
-     suportadas pelo Projeto A: são identificadas, ignoradas, e um aviso
-     claro é mostrado ao usuário ao carregar o arquivo — exatamente como
-     pedido no enunciado.
-
-  9) Mecanismo de escalonamento plugável (requisito 4.2): RM e EDF são
-     apenas duas entradas registradas em ALGORITMOS_DE_ESCALONAMENTO (topo
-     do arquivo), cada uma sendo só uma função "prioridade primária". O
-     método `Simulador._escalonar` nunca precisa ser alterado para incluir
-     um novo algoritmo — basta chamar `registrar_algoritmo(...)`. O parser
-     do arquivo de configuração e o combobox da tela "Parâmetros..." também
-     consultam este mesmo registro, então um algoritmo novo aparece em
-     ambos automaticamente.
-
-  10) Painel de "estado das tarefas" (requisito 1.5.1): ao lado do gráfico
-      de Gantt, uma tabela mostra o TCB dinâmico de cada tarefa (estado,
-      CPU, tempo restante, prazo absoluto, instância atual, se o prazo já
-      foi perdido) referente ao EXATO passo em que o cursor de exibição
-      está posicionado — funcionando como o "debugger" pedido no
-      enunciado, inclusive ao retroceder no tempo.
---------------------------------------------------------------------------------
-
-Todo o código abaixo é comentado em português, explicando o que cada parte
-faz e por que foi implementada daquela forma.
 """
 
 import os
@@ -111,24 +16,24 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 
-# ==============================================================================
-# CONSTANTES DE APRESENTAÇÃO (usadas tanto no Canvas do Tkinter quanto no SVG)
-# ==============================================================================
+# ==================================================================================================================
+# CONSTANTES DE APRESENTAÇÃO (meramente gráficas, não afetam a lógica do escalonador, funcionando apenas pra representação gráfica)
+# ==================================================================================================================
 LARGURA_TICK = 26          # largura em pixels de um tick no eixo do tempo
 ALTURA_LINHA = 32          # altura em pixels de cada linha (tarefa ou CPU)
 MARGEM_ESQUERDA = 140      # espaço reservado à esquerda para os rótulos
 MARGEM_TOPO = 40           # espaço reservado no topo para a régua de ticks
 COR_GRADE = "#DDDDDD"      # cor das linhas de grade verticais/horizontais
 COR_CPU_DESLIGADA = "#B0B0B0"  # cor usada para indicar uma CPU desligada
-COR_TEXTO = "#222222"
-COR_CHEGADA = "#2E7D32"
-COR_DEADLINE_MISS = "#D32F2F"
-COR_SORTEIO = "#F9A825"
+COR_TEXTO = "#222222"          # cor padrão usada para textos 
+COR_CHEGADA = "#2E7D32"     # cor do marcador de chegada de instância
+COR_DEADLINE_MISS = "#D32F2F"  # cor usada para indicar uma falha de deadline (OU SEJA, quando perde o prazo)
+COR_SORTEIO = "#F9A825"  # cor usada para indicar um sorteio
 
 
 # ==============================================================================
 # CONSTANTES DE ESTILO DA INTERFACE (ttk) — usadas apenas na "casca" da janela
-# (barra de ferramentas, status, molduras). Não afetam o desenho do Gantt.
+# (barra de ferramentas, status, molduras). Não afetam o desenho do Gantt em si
 # ==============================================================================
 COR_FUNDO_APP = "#F2F4F8"
 COR_BARRA_FERRAMENTAS = "#FFFFFF"
@@ -149,17 +54,18 @@ FONTE_STATUS = ("Segoe UI", 9)
 
 
 # ==============================================================================
-# 0) REGISTRO PLUGÁVEL DE ALGORITMOS DE ESCALONAMENTO
+# 1) REGISTRO PLUGÁVEL DE ALGORITMOS DE ESCALONAMENTO
 # ==============================================================================
-# Requisito 4.2: o mecanismo de escalonamento deve ser flexível/configurável,
-# de modo que NOVOS algoritmos possam ser incluídos sem precisar alterar o
-# código da classe Simulador. Para isso, cada algoritmo é representado apenas
-# como uma função "prioridade primária": recebe (tarefa, estado_dinamico) e
-# devolve um valor comparável, onde MENOR = MAIS prioritário. O restante do
-# escalonamento (os 5 critérios de desempate, atribuição de CPU, etc.) é
-# comum a todos os algoritmos e fica implementado uma única vez em
-# `Simulador._escalonar`.
-#
+'''
+Requisito 4.2: O mecanismo de implementação do algoritmo de escalonamento deve ser
+flexível/configurável/parametrizável de modo que novos algoritmos possam ser
+facilmente incluídos no simulador sem a necessidade de modificar o código da
+simulação. Idealmente, o escalonador é apenas uma função que retorna qual é a
+próxima tarefa a ser executada, que pode, inclusive, estar contida em uma biblioteca
+dinâmica fora do arquivo binário do executável do simulado.
+'''
+
+
 # Para adicionar um algoritmo novo (ex.: Deadline Monotonic), basta chamar
 # `registrar_algoritmo(...)` — nenhuma outra parte do simulador precisa mudar,
 # nem o parser do arquivo de configuração (que valida contra este registro) nem
@@ -190,7 +96,8 @@ def registrar_algoritmo(nome, funcao_prioridade_primaria, descricao=""):
     }
 
 
-# ---- algoritmos exigidos pelo Projeto A ----
+# ---- algoritmos exigidos pelo Projeto A é o RM e o EDF, portanto haverá 2 chamadas da função: ----
+
 registrar_algoritmo(
     'RM',
     lambda tarefa, et: tarefa.periodo,
@@ -204,20 +111,18 @@ registrar_algoritmo(
 
 
 # ==============================================================================
-# 1) ESTRUTURA DE DADOS: TAREFA (a parte "estática"/definição do TCB)
+# 2) ESTRUTURA DE DADOS: TAREFA (a parte "estática"/definição do Task Control Block)
 # ==============================================================================
+
 class Tarefa:
     """
-    Guarda os parâmetros ESTÁTICOS de uma tarefa (aqueles que vêm do arquivo
-    de configuração ou que o usuário altera pelo editor de tarefas).
+    Guarda apenas a 'identidade' e as regras fixas da tarefa (o que veio do arquivo 
+    de configuração e nunca muda, como duração, período e prazo). 
 
-    O estado DINÂMICO de execução (quanto tempo falta, se está bloqueada,
-    em qual CPU está etc.) NÃO fica aqui — fica em um dicionário separado
-    dentro da classe Simulador (`estado_tarefas`), pois esse estado muda a
-    cada tick e precisa ser copiado (deepcopy) para o histórico do modo
-    passo-a-passo. Manter as duas coisas separadas facilita bastante tanto
-    a reconstrução da simulação (quando uma tarefa é editada) quanto a
-    navegação livre para frente/trás no tempo.
+    O que muda a cada segundo (quanto tempo falta rodar, se está ativa ou em qual 
+    CPU está) fica separado no Simulador. Fazemos isso para não misturar as regras 
+    originais com o andamento da simulação, o que facilita muito na hora de resetar 
+    o sistema ou de criar o histórico para o botão de 'voltar no tempo'.
     """
 
     def __init__(self, id_tarefa, cor, ingresso, duracao, periodo, prazo, eventos):
@@ -233,55 +138,53 @@ class Tarefa:
 
 
 # ==============================================================================
-# 2) FUNÇÕES AUXILIARES DE PARSING (tolerantes a formatação "suja")
+# 3) FUNÇÕES AUXILIARES DE PARSING (tolerantes a formatação "suja")
 # ==============================================================================
-def _normalizar_cor(valor):
-    """
-    Aceita cores como 'FF0000', '#ff0000', ' #FF0000 ' etc. e devolve sempre
-    no formato canônico '#RRGGBB' em maiúsculas. Devolve None se a cor for
-    inválida, para que quem chamou decida o que fazer (usar cor padrão etc.).
-    """
-    v = valor.strip()
-    if not v:
-        return None
-    if not v.startswith('#'):
-        v = '#' + v
-    if len(v) != 7:
-        return None
-    try:
-        int(v[1:], 16)
-    except ValueError:
-        return None
-    return v.upper()
 
+# Padroniza strings de cores para o formato hexadecimal canônico (#RRGGBB).
+
+def _normalizar_cor(valor):
+    v = valor.strip()              # Remove espaços em branco extras no começo e no fim da string.
+    if not v:
+        return None                # Se a string estiver vazia, retorna None.
+    if not v.startswith('#'):
+        v = '#' + v                # Se o usuário esqueceu de colocar o '#', o código adiciona.
+    if len(v) != 7:
+        return None                # O formato correto (#RRGGBB) tem exatamente 7 caracteres. Se não tiver, é inválido.
+    try:
+        int(v[1:], 16)             # Tenta converter os 6 caracteres após o '#' de base hexadecimal para número inteiro.
+    except ValueError:
+        return None                # Se houver letras inválidas (ex: 'G' ou 'Z'), a conversão falha e retorna None.
+    return v.upper()               # Se passou em tudo, retorna a cor padronizada com letras maiúsculas.
+
+
+
+# Interpreta o texto de eventos de bloqueio (formato "deslocamento:duracao,...").
+# É tolerante a falhas: ignora tokens corrompidos sem quebrar a execução.
 
 def _parsear_eventos(campo):
-    """
-    Interpreta o campo "lista_eventos" de uma tarefa (ver PREMISSA 1 no topo
-    do arquivo). Formato: "deslocamento:duracao,deslocamento:duracao,...".
-    Tokens mal formados são silenciosamente ignorados (o parser deve ser
-    tolerante, conforme pedido no enunciado) — apenas os pares válidos são
-    aproveitados.
-    """
-    campo = campo.strip()
+    campo = campo.strip()          # Limpa espaços em branco da string de eventos.
     if campo in ('', '-'):
-        return []
+        return []                  # Se estiver vazio ou preenchido com '-', significa que não há eventos de bloqueio.
     eventos = []
-    for parte in campo.split(','):
+    for parte in campo.split(','): # Separa múltiplos eventos usando a vírgula como delimitador.
         parte = parte.strip()
         if not parte or ':' not in parte:
-            continue
-        desloc_str, dur_str = parte.split(':', 1)
+            continue               # Pula pedaços vazios ou mal formatados (sem dois-pontos).
+        desloc_str, dur_str = parte.split(':', 1) # Divide o texto em 'momento do evento' e 'duração'.
         try:
-            desloc = int(desloc_str.strip())
-            dur = int(dur_str.strip())
+            desloc = int(desloc_str.strip())      # Converte o tempo do deslocamento para número inteiro.
+            dur = int(dur_str.strip())            # Converte a duração do bloqueio para número inteiro.
         except ValueError:
-            continue
+            continue               # Se der erro na conversão para número, ignora esse evento específico.
         if desloc >= 0 and dur > 0:
-            eventos.append((desloc, dur))
-    eventos.sort(key=lambda par: par[0])
+            eventos.append((desloc, dur)) # Se os valores forem válidos, guarda como uma tupla (deslocamento, duração).
+    eventos.sort(key=lambda par: par[0])  # Ordena os eventos cronologicamente pelo tempo de deslocamento.
     return eventos
 
+
+# Lê o arquivo de configuração linha por linha, validando parâmetros globais 
+# e instanciando as tarefas válidas. Retorna dados limpos e uma lista de avisos.
 
 def carregar_configuracao(caminho):
     """
@@ -291,48 +194,54 @@ def carregar_configuracao(caminho):
         linha 1:        algoritmo_escalonamento;quantum;qtde_cpus
         linhas 2..N:    id;cor;ingresso;duracao;periodo;prazo;lista_eventos
 
-    Tolerâncias implementadas (exigidas no enunciado):
+    Tolerâncias implementadas:
       - nomes de algoritmo são tratados de forma "case-insensitive";
       - linhas em branco (ou só com espaços) são ignoradas;
       - um ';' sobrando no final de qualquer linha é tolerado;
-      - caminho absoluto ou relativo (relativo ao diretório de trabalho
-        atual) — ambos funcionam, pois normalizamos com os.path.abspath;
-      - linhas de tarefa mal formadas geram um AVISO e são ignoradas em vez
-        de interromper o carregamento inteiro do arquivo.
+      - caminho absoluto ou relativo — ambos funcionam com os.path.abspath;
+      - linhas de tarefa mal formadas geram um AVISO e são ignoradas sem quebrar o app.
 
     Retorna: (algoritmo, quantum, num_cpus, lista_de_tarefas, avisos)
-    Lança ValueError (com mensagem amigável) apenas quando o arquivo não
-    pode ser interpretado de jeito nenhum (cabeçalho ausente/errado, ou
-    nenhuma tarefa válida sobrou depois da filtragem).
     """
+    # Padroniza o caminho do arquivo para garantir compatibilidade com o S.O.
     caminho = os.path.abspath(os.path.expanduser(caminho.strip()))
+    
+    # Valida se o arquivo realmente existe no disco
     if not os.path.isfile(caminho):
         raise ValueError(f"Arquivo não encontrado: {caminho}")
 
+    # Abre o arquivo de texto com codificação UTF-8
     with open(caminho, 'r', encoding='utf-8') as arquivo:
         linhas_brutas = arquivo.readlines()
 
-    # Tolerância: descarta linhas totalmente vazias (ou só com espaços)
+    # Limpeza preliminar: remove espaços extras e descarta linhas totalmente vazias
     linhas = [linha.strip() for linha in linhas_brutas]
     linhas = [linha for linha in linhas if linha != '']
 
+    # Se após a limpeza a lista estiver vazia, o arquivo não tem conteúdo útil
     if not linhas:
         raise ValueError("O arquivo de configuração está vazio.")
 
-    avisos = []
+    avisos = []  # Lista para armazenar avisos de inconsistências leves
 
-    # ---------------- linha 1: cabeçalho ----------------
+    # -------------------------------------------------------------------------
+    # 1) LEITURA E VALIDAÇÃO DO CABEÇALHO (PRIMEIRA LINHA)
+    # -------------------------------------------------------------------------
     cabecalho = linhas[0]
     if cabecalho.endswith(';'):
-        cabecalho = cabecalho[:-1]
+        cabecalho = cabecalho[:-1]  # Tolera ponto e vírgula sobrando no fim da linha
+        
     campos_cabecalho = [c.strip() for c in cabecalho.split(';')]
+    
     if len(campos_cabecalho) < 3:
         raise ValueError(
             "Primeira linha inválida. O formato esperado é: "
             "algoritmo_escalonamento;quantum;qtde_cpus"
         )
+        
     algoritmo_bruto, quantum_bruto, cpus_bruto = campos_cabecalho[:3]
 
+    # Valida se o algoritmo informado existe no dicionário global de algoritmos
     algoritmo = algoritmo_bruto.strip().upper()
     if algoritmo not in ALGORITMOS_DE_ESCALONAMENTO:
         disponiveis = ', '.join(sorted(ALGORITMOS_DE_ESCALONAMENTO))
@@ -341,6 +250,7 @@ def carregar_configuracao(caminho):
             f"Algoritmos disponíveis: {disponiveis}."
         )
 
+    # Valida se o quantum é um número inteiro positivo
     try:
         quantum = int(quantum_bruto)
         if quantum <= 0:
@@ -348,6 +258,7 @@ def carregar_configuracao(caminho):
     except ValueError:
         raise ValueError(f"Quantum inválido na primeira linha: '{quantum_bruto}'.")
 
+    # Valida se a quantidade de CPUs é um número inteiro positivo
     try:
         num_cpus = int(cpus_bruto)
         if num_cpus <= 0:
@@ -355,18 +266,23 @@ def carregar_configuracao(caminho):
     except ValueError:
         raise ValueError(f"Quantidade de CPUs inválida na primeira linha: '{cpus_bruto}'.")
 
-    # ---------------- linhas seguintes: tarefas ----------------
+    # -------------------------------------------------------------------------
+    # 2) LEITURA E VALIDAÇÃO DAS TAREFAS (LINHAS SEGUINTES)
+    # -------------------------------------------------------------------------
     tarefas = []
-    ids_vistos = set()
+    ids_vistos = set()  # Conjunto para controlar IDs duplicados
 
+    # Varre da segunda linha em diante, contando o número da linha para logs de erro
     for numero_linha, linha in enumerate(linhas[1:], start=2):
+        # Remove ponto e vírgula do final da linha se houver
         linha_sem_ponto_e_virgula_final = linha[:-1] if linha.endswith(';') else linha
         campos = [c.strip() for c in linha_sem_ponto_e_virgula_final.split(';')]
 
-        # Tolerância extra: completa campos faltando em vez de descartar a
-        # linha inteira (o 7º campo, lista_eventos, é opcional na prática)
+        # Tolerância: preenche com string vazia caso faltem campos opcionais no final
         while len(campos) < 7:
             campos.append('')
+            
+        # Tolerância: corta campos em excesso e emite aviso
         if len(campos) > 7:
             avisos.append(f"Linha {numero_linha}: havia campos em excesso; os extras foram ignorados.")
             campos = campos[:7]
@@ -374,26 +290,32 @@ def carregar_configuracao(caminho):
         (id_str, cor_str, ingresso_str, duracao_str,
          periodo_str, prazo_str, eventos_str) = campos
 
+        # Validação do ID da tarefa
         try:
             id_tarefa = int(id_str)
         except ValueError:
             avisos.append(f"Linha {numero_linha}: ID de tarefa inválido ('{id_str}'); linha ignorada.")
             continue
+            
+        # Verifica duplicidade de ID
         if id_tarefa in ids_vistos:
             avisos.append(f"Linha {numero_linha}: ID {id_tarefa} duplicado; linha ignorada.")
             continue
 
+        # Validação e normalização da cor
         cor = _normalizar_cor(cor_str)
         if cor is None:
-            cor = "#3366CC"
+            cor = "#3366CC"  # Cor padrão de fallback
             avisos.append(f"Tarefa {id_tarefa}: cor inválida ('{cor_str}'); usando cor padrão {cor}.")
 
+        # Validação do instante de ingresso
         try:
             ingresso = int(ingresso_str)
         except ValueError:
             avisos.append(f"Tarefa {id_tarefa}: instante de ingresso inválido; assumindo 0.")
             ingresso = 0
 
+        # Validação da duração (deve ser maior que zero)
         try:
             duracao = int(duracao_str)
             if duracao <= 0:
@@ -402,13 +324,15 @@ def carregar_configuracao(caminho):
             avisos.append(f"Tarefa {id_tarefa}: duração inválida; tarefa ignorada.")
             continue
 
+        # Validação do período (descarta tarefas aperiódicas)
         periodo_limpo = periodo_str.strip()
         if periodo_limpo in ('', '0', '-'):
             avisos.append(
-                f"Tarefa {id_tarefa} é aperiódica (sem período definido). O Projeto A "
-                "não oferece suporte a tarefas aperiódicas; ela foi ignorada na simulação."
+                f"Tarefa {id_tarefa} é aperiódica (sem período definido). O simulador "
+                "não oferece suporte a tarefas aperiódicas; ela foi ignorada."
             )
             continue
+            
         try:
             periodo = int(periodo_limpo)
             if periodo <= 0:
@@ -417,6 +341,7 @@ def carregar_configuracao(caminho):
             avisos.append(f"Tarefa {id_tarefa}: período inválido; tarefa ignorada.")
             continue
 
+        # Validação do prazo (se inválido, assume prazo igual ao período)
         try:
             prazo = int(prazo_str)
             if prazo <= 0:
@@ -425,19 +350,21 @@ def carregar_configuracao(caminho):
             avisos.append(f"Tarefa {id_tarefa}: prazo inválido; assumindo prazo == período.")
             prazo = periodo
 
+        # Processa a string de eventos de bloqueio
         eventos = _parsear_eventos(eventos_str)
 
+        # Instancia o objeto Tarefa e adiciona à lista válida
         tarefas.append(Tarefa(id_tarefa, cor, ingresso, duracao, periodo, prazo, eventos))
         ids_vistos.add(id_tarefa)
 
+    # Garante que sobrou pelo menos uma tarefa válida para simular
     if not tarefas:
         raise ValueError("Nenhuma tarefa periódica válida foi encontrada no arquivo.")
 
     return algoritmo, quantum, num_cpus, tarefas, avisos
 
-
 # ==============================================================================
-# 3) NÚCLEO DO SIMULADOR (KERNEL)
+# 4) NÚCLEO DO SIMULADOR (KERNEL)
 # ==============================================================================
 class Simulador:
     """
@@ -1048,6 +975,14 @@ class Aplicacao(tk.Tk):
     ficar bem longa), a legenda e a barra de status.
     """
 
+    # Paleta de cores sugeridas (requisito 3.2 — sugerir valores padrão) para
+    # quando o usuário cria uma nova tarefa pela interface: percorrida em
+    # ordem, pulando cores já usadas por alguma tarefa existente.
+    PALETA_CORES_PADRAO = [
+        "#3366CC", "#DC3912", "#FF9900", "#109618", "#990099",
+        "#0099C6", "#DD4477", "#66AA00", "#B82E2E", "#316395",
+    ]
+
     def __init__(self):
         super().__init__()
         self.title("Simulador de SO Multitarefa - Projeto A (v0.6)")
@@ -1142,6 +1077,8 @@ class Aplicacao(tk.Tk):
         ttk.Button(barra, text="Avançar passo ⏭", style="Secondary.TButton",
                    command=self.avancar_passo).pack(side=tk.LEFT, padx=6)
         ttk.Separator(barra, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=12)
+        ttk.Button(barra, text="＋ Nova tarefa...", style="Secondary.TButton",
+                   command=self.abrir_nova_tarefa).pack(side=tk.LEFT, padx=6)
         ttk.Button(barra, text="✎ Editar tarefa...", style="Secondary.TButton",
                    command=self.abrir_editor_de_tarefa).pack(side=tk.LEFT, padx=6)
         ttk.Button(barra, text="💾 Exportar SVG...", style="Secondary.TButton",
@@ -1372,6 +1309,104 @@ class Aplicacao(tk.Tk):
         self.simulador.retroceder()
         self._apos_mudanca_de_estado()
 
+    def _proxima_cor_padrao(self):
+        """Sugere (requisito 3.2) a primeira cor da paleta ainda não usada por nenhuma tarefa."""
+        usadas = {t.cor for t in self.simulador.definicoes} if self.simulador else set()
+        for cor in self.PALETA_CORES_PADRAO:
+            if cor not in usadas:
+                return cor
+        return self.PALETA_CORES_PADRAO[len(usadas) % len(self.PALETA_CORES_PADRAO)]
+
+    def abrir_nova_tarefa(self):
+        """
+        Adiciona uma nova tarefa ao conjunto de tarefas simulado (requisito
+        3.1 — o "conjunto de tarefas" deve poder ser configurado pelo
+        usuário, o que inclui incluir tarefas novas, não só editar as que
+        já vieram do arquivo). Os campos vêm com valores padrão sugeridos
+        (requisito 3.2), que o usuário pode sobrescrever livremente.
+        """
+        if self.simulador is None:
+            messagebox.showinfo("Aviso", "Carregue um arquivo de configuração primeiro.")
+            return
+
+        janela = tk.Toplevel(self)
+        janela.title("Nova tarefa")
+        janela.geometry("400x460")
+        janela.configure(bg=COR_FUNDO_APP)
+        janela.transient(self)
+
+        cabecalho = tk.Frame(janela, bg=COR_FUNDO_APP)
+        cabecalho.grid(row=0, column=0, columnspan=2, sticky="ew", padx=16, pady=(16, 4))
+        tk.Label(cabecalho, text="Nova tarefa", bg=COR_FUNDO_APP, fg=COR_TEXTO_SECUNDARIO,
+                 font=FONTE_TITULO).pack(anchor="w")
+
+        ids_existentes = self.simulador.tarefas_por_id.keys()
+        proximo_id = (max(ids_existentes) + 1) if ids_existentes else 1
+
+        campos = {}
+        rotulos_com_padrao = [
+            ("id", "ID (único):", str(proximo_id)),
+            ("cor", "Cor (#RRGGBB):", self._proxima_cor_padrao()),
+            ("ingresso", "Ingresso:", "0"),
+            ("duracao", "Duração:", "1"),
+            ("periodo", "Período:", "5"),
+            ("prazo", "Prazo:", "5"),
+            ("eventos", "Eventos (desloc:dur,...):", ""),
+        ]
+        for i, (chave, texto, valor_padrao) in enumerate(rotulos_com_padrao, start=1):
+            tk.Label(janela, text=texto, bg=COR_FUNDO_APP, font=FONTE_PADRAO).grid(
+                row=i, column=0, sticky="w", padx=16, pady=6)
+            entrada = tk.Entry(janela, width=26, font=FONTE_PADRAO, relief="solid", bd=1)
+            entrada.insert(0, valor_padrao)
+            entrada.grid(row=i, column=1, padx=16, pady=6, sticky="ew")
+            campos[chave] = entrada
+        janela.columnconfigure(1, weight=1)
+
+        def aplicar():
+            try:
+                novo_id = int(campos["id"].get())
+            except ValueError:
+                messagebox.showerror("Erro", "ID deve ser um número inteiro.", parent=janela)
+                return
+            if novo_id in self.simulador.tarefas_por_id:
+                messagebox.showerror(
+                    "Erro", f"Já existe uma tarefa com ID {novo_id}. Escolha outro ID.", parent=janela)
+                return
+
+            cor = _normalizar_cor(campos["cor"].get())
+            if cor is None:
+                messagebox.showerror("Erro", "Cor inválida. Use o formato #RRGGBB.", parent=janela)
+                return
+
+            try:
+                ingresso = int(campos["ingresso"].get())
+                duracao = int(campos["duracao"].get())
+                periodo = int(campos["periodo"].get())
+                prazo = int(campos["prazo"].get())
+                if ingresso < 0 or duracao <= 0 or periodo <= 0 or prazo <= 0:
+                    raise ValueError
+            except ValueError:
+                messagebox.showerror(
+                    "Erro",
+                    "Ingresso deve ser inteiro (>= 0); duração, período e prazo devem ser inteiros positivos.",
+                    parent=janela,
+                )
+                return
+            eventos = _parsear_eventos(campos["eventos"].get())
+
+            nova_tarefa = Tarefa(novo_id, cor, ingresso, duracao, periodo, prazo, eventos)
+            self.simulador.definicoes.append(nova_tarefa)
+            self.simulador.tarefas_por_id = {t.id: t for t in self.simulador.definicoes}
+
+            self.svg_exportado_automaticamente = False
+            self.simulador.aplicar_edicao_e_reconstruir()
+            self._apos_mudanca_de_estado()
+            self.desenhar_legenda()
+            janela.destroy()
+
+        ttk.Button(janela, text="Adicionar tarefa", style="Accent.TButton", command=aplicar).grid(
+            row=len(rotulos_com_padrao) + 1, column=0, columnspan=2, pady=18)
+
     def abrir_editor_de_tarefa(self):
         if self.simulador is None:
             messagebox.showinfo("Aviso", "Carregue um arquivo de configuração primeiro.")
@@ -1464,8 +1499,41 @@ class Aplicacao(tk.Tk):
             self.desenhar_legenda()
             janela.destroy()
 
-        ttk.Button(janela, text="Aplicar", style="Accent.TButton", command=aplicar).grid(
-            row=len(rotulos) + 2, column=0, columnspan=2, pady=18)
+        def remover():
+            """
+            Remove a tarefa selecionada do conjunto de tarefas simulado
+            (requisito 3.1 — "conjunto de tarefas" é um parâmetro
+            configurável). É preciso manter ao menos uma tarefa, senão não
+            há o que simular. A remoção, como qualquer edição, reconstrói
+            a linha do tempo inteira (Premissa 5).
+            """
+            if len(self.simulador.definicoes) <= 1:
+                messagebox.showerror(
+                    "Erro", "Não é possível remover a última tarefa restante.", parent=janela)
+                return
+            id_selecionado = int(variavel_id.get())
+            if not messagebox.askyesno(
+                    "Confirmar remoção", f"Remover a Tarefa {id_selecionado}? Esta ação não pode ser desfeita.",
+                    parent=janela):
+                return
+
+            self.simulador.definicoes = [
+                t for t in self.simulador.definicoes if t.id != id_selecionado
+            ]
+            self.simulador.tarefas_por_id = {t.id: t for t in self.simulador.definicoes}
+
+            self.svg_exportado_automaticamente = False
+            self.simulador.aplicar_edicao_e_reconstruir()
+            self._apos_mudanca_de_estado()
+            self.desenhar_legenda()
+            janela.destroy()
+
+        quadro_botoes = tk.Frame(janela, bg=COR_FUNDO_APP)
+        quadro_botoes.grid(row=len(rotulos) + 2, column=0, columnspan=2, pady=18)
+        ttk.Button(quadro_botoes, text="Aplicar", style="Accent.TButton",
+                   command=aplicar).pack(side=tk.LEFT, padx=6)
+        ttk.Button(quadro_botoes, text="Remover tarefa", style="Secondary.TButton",
+                   command=remover).pack(side=tk.LEFT, padx=6)
 
     def exportar_para_svg(self):
         if self.simulador is None or not self.simulador.historico:
