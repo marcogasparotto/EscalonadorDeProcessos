@@ -29,6 +29,7 @@ COR_TEXTO = "#222222"          # cor padrão usada para textos
 COR_CHEGADA = "#2E7D32"     # cor do marcador de chegada de instância
 COR_DEADLINE_MISS = "#D32F2F"  # cor usada para indicar uma falha de deadline (OU SEJA, quando perde o prazo)
 COR_SORTEIO = "#F9A825"  # cor usada para indicar um sorteio
+MAX_CPUS = 64              # limite defensivo do simulador
 
 
 # ==============================================================================
@@ -162,25 +163,28 @@ def _normalizar_cor(valor):
 # Interpreta o texto de eventos de bloqueio (formato "deslocamento:duracao,...").
 # É tolerante a falhas: ignora tokens corrompidos sem quebrar a execução.
 
-def _parsear_eventos(campo):
-    campo = campo.strip()          # Limpa espaços em branco da string de eventos.
+def _parsear_eventos(campo, contexto="lista de eventos"):
+    """Lê deslocamento:duração e informa precisamente qualquer erro."""
+    campo = campo.strip()
     if campo in ('', '-'):
-        return []                  # Se estiver vazio ou preenchido com '-', significa que não há eventos de bloqueio.
-    eventos = []
-    for parte in campo.split(','): # Separa múltiplos eventos usando a vírgula como delimitador.
+        return []
+    eventos, deslocamentos = [], set()
+    for parte in campo.split(','):
         parte = parte.strip()
         if not parte or ':' not in parte:
-            continue               # Pula pedaços vazios ou mal formatados (sem dois-pontos).
-        desloc_str, dur_str = parte.split(':', 1) # Divide o texto em 'momento do evento' e 'duração'.
+            raise ValueError(f"{contexto}: evento inválido '{parte}'. Use deslocamento:duração.")
+        desloc_str, dur_str = parte.split(':', 1)
         try:
-            desloc = int(desloc_str.strip())      # Converte o tempo do deslocamento para número inteiro.
-            dur = int(dur_str.strip())            # Converte a duração do bloqueio para número inteiro.
-        except ValueError:
-            continue               # Se der erro na conversão para número, ignora esse evento específico.
-        if desloc >= 0 and dur > 0:
-            eventos.append((desloc, dur)) # Se os valores forem válidos, guarda como uma tupla (deslocamento, duração).
-    eventos.sort(key=lambda par: par[0])  # Ordena os eventos cronologicamente pelo tempo de deslocamento.
-    return eventos
+            desloc, dur = int(desloc_str.strip()), int(dur_str.strip())
+        except ValueError as erro:
+            raise ValueError(f"{contexto}: evento inválido '{parte}'; use inteiros.") from erro
+        if desloc < 0 or dur <= 0:
+            raise ValueError(f"{contexto}: deslocamento >= 0 e duração > 0 são obrigatórios.")
+        if desloc in deslocamentos:
+            raise ValueError(f"{contexto}: dois eventos no deslocamento {desloc} não são permitidos.")
+        deslocamentos.add(desloc)
+        eventos.append((desloc, dur))
+    return sorted(eventos, key=lambda par: par[0])
 
 
 # Lê o arquivo de configuração linha por linha, validando parâmetros globais 
@@ -233,7 +237,7 @@ def carregar_configuracao(caminho):
         
     campos_cabecalho = [c.strip() for c in cabecalho.split(';')]
     
-    if len(campos_cabecalho) < 3:
+    if len(campos_cabecalho) != 3:
         raise ValueError(
             "Primeira linha inválida. O formato esperado é: "
             "algoritmo_escalonamento;quantum;qtde_cpus"
@@ -261,16 +265,17 @@ def carregar_configuracao(caminho):
     # Valida se a quantidade de CPUs é um número inteiro positivo
     try:
         num_cpus = int(cpus_bruto)
-        if num_cpus <= 0:
+        if num_cpus <= 0 or num_cpus > MAX_CPUS:
             raise ValueError
     except ValueError:
-        raise ValueError(f"Quantidade de CPUs inválida na primeira linha: '{cpus_bruto}'.")
+        raise ValueError(f"Quantidade de CPUs inválida: '{cpus_bruto}'. Use 1 a {MAX_CPUS}.")
 
     # -------------------------------------------------------------------------
     # 2) LEITURA E VALIDAÇÃO DAS TAREFAS (LINHAS SEGUINTES)
     # -------------------------------------------------------------------------
     tarefas = []
     ids_vistos = set()  # Conjunto para controlar IDs duplicados
+    cores_vistas = set()
 
     # Varre da segunda linha em diante, contando o número da linha para logs de erro
     for numero_linha, linha in enumerate(linhas[1:], start=2):
@@ -278,14 +283,11 @@ def carregar_configuracao(caminho):
         linha_sem_ponto_e_virgula_final = linha[:-1] if linha.endswith(';') else linha
         campos = [c.strip() for c in linha_sem_ponto_e_virgula_final.split(';')]
 
-        # Tolerância: preenche com string vazia caso faltem campos opcionais no final
-        while len(campos) < 7:
+        # Os seis primeiros campos são obrigatórios; lista_eventos pode ser vazia.
+        if len(campos) == 6:
             campos.append('')
-            
-        # Tolerância: corta campos em excesso e emite aviso
-        if len(campos) > 7:
-            avisos.append(f"Linha {numero_linha}: havia campos em excesso; os extras foram ignorados.")
-            campos = campos[:7]
+        elif len(campos) != 7:
+            raise ValueError(f"Linha {numero_linha}: esperados 7 campos; recebidos {len(campos)}.")
 
         (id_str, cor_str, ingresso_str, duracao_str,
          periodo_str, prazo_str, eventos_str) = campos
@@ -294,26 +296,26 @@ def carregar_configuracao(caminho):
         try:
             id_tarefa = int(id_str)
         except ValueError:
-            avisos.append(f"Linha {numero_linha}: ID de tarefa inválido ('{id_str}'); linha ignorada.")
-            continue
+            raise ValueError(f"Linha {numero_linha}: ID inválido ('{id_str}').")
             
         # Verifica duplicidade de ID
         if id_tarefa in ids_vistos:
-            avisos.append(f"Linha {numero_linha}: ID {id_tarefa} duplicado; linha ignorada.")
-            continue
+            raise ValueError(f"Linha {numero_linha}: ID {id_tarefa} duplicado.")
 
         # Validação e normalização da cor
         cor = _normalizar_cor(cor_str)
         if cor is None:
-            cor = "#3366CC"  # Cor padrão de fallback
-            avisos.append(f"Tarefa {id_tarefa}: cor inválida ('{cor_str}'); usando cor padrão {cor}.")
+            raise ValueError(f"Linha {numero_linha}: cor inválida ('{cor_str}').")
+        if cor in cores_vistas:
+            raise ValueError(f"Linha {numero_linha}: a cor {cor} já pertence a outra tarefa.")
 
         # Validação do instante de ingresso
         try:
             ingresso = int(ingresso_str)
+            if ingresso < 0:
+                raise ValueError
         except ValueError:
-            avisos.append(f"Tarefa {id_tarefa}: instante de ingresso inválido; assumindo 0.")
-            ingresso = 0
+            raise ValueError(f"Linha {numero_linha}: ingresso inválido ('{ingresso_str}').")
 
         # Validação da duração (deve ser maior que zero)
         try:
@@ -321,8 +323,7 @@ def carregar_configuracao(caminho):
             if duracao <= 0:
                 raise ValueError
         except ValueError:
-            avisos.append(f"Tarefa {id_tarefa}: duração inválida; tarefa ignorada.")
-            continue
+            raise ValueError(f"Linha {numero_linha}: duração inválida ('{duracao_str}').")
 
         # Validação do período (descarta tarefas aperiódicas)
         periodo_limpo = periodo_str.strip()
@@ -338,8 +339,7 @@ def carregar_configuracao(caminho):
             if periodo <= 0:
                 raise ValueError
         except ValueError:
-            avisos.append(f"Tarefa {id_tarefa}: período inválido; tarefa ignorada.")
-            continue
+            raise ValueError(f"Linha {numero_linha}: período inválido ('{periodo_str}').")
 
         # Validação do prazo (se inválido, assume prazo igual ao período)
         try:
@@ -347,15 +347,15 @@ def carregar_configuracao(caminho):
             if prazo <= 0:
                 raise ValueError
         except ValueError:
-            avisos.append(f"Tarefa {id_tarefa}: prazo inválido; assumindo prazo == período.")
-            prazo = periodo
+            raise ValueError(f"Linha {numero_linha}: prazo inválido ('{prazo_str}').")
 
         # Processa a string de eventos de bloqueio
-        eventos = _parsear_eventos(eventos_str)
+        eventos = _parsear_eventos(eventos_str, f"Linha {numero_linha}, tarefa {id_tarefa}")
 
         # Instancia o objeto Tarefa e adiciona à lista válida
         tarefas.append(Tarefa(id_tarefa, cor, ingresso, duracao, periodo, prazo, eventos))
         ids_vistos.add(id_tarefa)
+        cores_vistas.add(cor)
 
     # Garante que sobrou pelo menos uma tarefa válida para simular
     if not tarefas:
@@ -367,434 +367,474 @@ def carregar_configuracao(caminho):
 # 4) NÚCLEO DO SIMULADOR (KERNEL)
 # ==============================================================================
 class Simulador:
-    """
-    Implementa o núcleo (kernel) da simulação: o relógio global orientado a
-    eventos, o TCB dinâmico de cada tarefa, o escalonador (RM/EDF + critérios
-    de desempate) e o histórico completo de estados usado pelo modo
-    passo-a-passo (debugger).
+    """Núcleo do simulador, executado rigorosamente um tick por passo.
 
-    A ideia central do "tick dinâmico" (pedida no enunciado) é: em vez de
-    avançar tick a tick sempre, calculamos qual é o PRÓXIMO instante em que
-    ALGO relevante muda (chegada de tarefa, fim de instância, expiração de
-    quantum, início/fim de bloqueio, ou o instante exato de um prazo) e
-    pulamos diretamente para ele. Isso é o que a função `_calcular_proximo_evento`
-    faz, e é ela quem determina o tamanho de cada "passo" da simulação.
+    Cada tarefa possui um TCB dinâmico e uma fila de jobs. Um job representa
+    uma ativação periódica independente. Isso é essencial porque uma nova
+    ativação pode chegar enquanto uma anterior ainda está pronta, executando
+    ou bloqueada. O escalonador escolhe jobs, mas a interface continua
+    apresentando o estado agregado por tarefa.
     """
 
-    def __init__(self, algoritmo, quantum, num_cpus, tarefas):
+    def __init__(self, algoritmo, quantum, num_cpus, tarefas, semente=0):
         self.algoritmo = algoritmo
         self.quantum = quantum
         self.num_cpus = num_cpus
-        self.definicoes = tarefas                      # lista de Tarefa (editável)
+        self.definicoes = tarefas
         self.tarefas_por_id = {t.id: t for t in tarefas}
-
+        self.semente = semente
+        self.rng = random.Random(semente)
         self.tick = 0
-        self.estado_tarefas = {}    # id -> dict de estado dinâmico (ver reiniciar)
-        self.cpus = []              # lista de {'ligada': bool, 'tarefa': id|None}
-        self.historico = []         # lista de "fotografias" completas do sistema
-        self.indice_historico = 0   # posição do cursor de exibição dentro do histórico
+        self.estado_tarefas = {}
+        self.jobs = {}
+        self.proximo_job_id = 1
+        self.cpus = []
+        self.historico = []
+        self.indice_historico = 0
         self.finalizado = False
 
-    # -------------------------- controle geral --------------------------
-    def reiniciar(self):
-        """Zera todo o estado dinâmico e recomeça a simulação do tick inicial."""
-        self.tick = min(t.ingresso for t in self.definicoes)
-        self.estado_tarefas = {
-            t.id: {
-                'instancias_liberadas': 0,
-                'concluidas': 0,
-                'liberacao_atual': None,
-                'prazo_abs_atual': None,
-                'restante_atual': 0,
-                'estado': 'nao_chegou',   # nao_chegou | pronta | executando | suspensa | concluida
-                'cpu': None,
-                'execucao_continua_desde': None,   # usado para controlar o quantum
-                'eventos_pendentes': [],
-                'bloqueio_fim': None,
-                'deadline_perdido': False,
-            }
-            for t in self.definicoes
+    def _novo_tcb(self):
+        return {
+            'instancias_liberadas': 0, 'concluidas': 0,
+            'liberacao_atual': None, 'prazo_abs_atual': None,
+            'restante_atual': 0, 'estado': 'nao_chegou', 'cpu': None,
+            'execucao_continua_desde': None, 'eventos_pendentes': [],
+            'bloqueio_fim': None, 'deadline_perdido': False,
+            'jobs_pendentes': [],
         }
-        self.cpus = [{'ligada': False, 'tarefa': None} for _ in range(self.num_cpus)]
+
+    def reiniciar(self):
+        """Reinicia o relógio, TCBs, jobs, CPUs, histórico e sorteios."""
+        self.tick = min(t.ingresso for t in self.definicoes)
+        self.estado_tarefas = {t.id: self._novo_tcb() for t in self.definicoes}
+        self.jobs = {}
+        self.proximo_job_id = 1
+        self.cpus = [{'ligada': False, 'tarefa': None, 'job': None}
+                     for _ in range(self.num_cpus)]
         self.finalizado = False
         self.historico = []
-
+        self.rng = random.Random(self.semente)
         eventos = self._processar_tick(self.tick)
         eventos += self._escalonar()
-        self._registrar_snapshot(eventos, blocos_intervalo=[])
+        self._sincronizar_tcbs()
+        self._registrar_snapshot(eventos, [])
         self.indice_historico = 0
 
-    def aplicar_edicao_e_reconstruir(self, indice_alvo=None):
-        """
-        Reconstrói a simulação inteira do zero (após o usuário editar uma
-        tarefa ou um parâmetro global como quantum/num_cpus) e reposiciona
-        o cursor de exibição no mesmo passo em que o usuário estava (ou no
-        último disponível, caso a simulação agora termine mais cedo).
-        Ver PREMISSA 5 no cabeçalho do arquivo para a justificativa.
-        """
-        if indice_alvo is None:
-            indice_alvo = self.indice_historico
-        self.tarefas_por_id = {t.id: t for t in self.definicoes}
-        self.reiniciar()
-        while (len(self.historico) - 1) < indice_alvo and not self.finalizado:
-            self.passo()
-        self.indice_historico = min(indice_alvo, len(self.historico) - 1)
+    def _job_visivel(self, tid):
+        """Retorna o job mais representativo da tarefa para a interface."""
+        ativos = [j for j in self.jobs.values()
+                  if j['tarefa'] == tid and j['estado'] != 'concluido']
+        if not ativos:
+            return None
+        ordem = {'executando': 0, 'suspensa': 1, 'pronta': 2}
+        return min(ativos, key=lambda j: (ordem.get(j['estado'], 9),
+                                          j['liberacao'], j['numero']))
 
-    # -------------------------- avanço no tempo --------------------------
+    def _sincronizar_tcbs(self):
+        """Projeta a fila de jobs no TCB agregado consumido pela interface."""
+        for t in self.definicoes:
+            et = self.estado_tarefas[t.id]
+            ativos = sorted([j for j in self.jobs.values()
+                             if j['tarefa'] == t.id and j['estado'] != 'concluido'],
+                            key=lambda j: (j['liberacao'], j['numero']))
+            et['jobs_pendentes'] = [j['id'] for j in ativos]
+            et['concluidas'] = sum(1 for j in self.jobs.values()
+                                   if j['tarefa'] == t.id and j['estado'] == 'concluido')
+            visivel = self._job_visivel(t.id)
+            if visivel is None:
+                et.update({
+                    'liberacao_atual': None, 'prazo_abs_atual': None,
+                    'restante_atual': 0,
+                    'estado': 'concluida' if et['instancias_liberadas'] >= 10
+                              and et['concluidas'] >= 10 else 'nao_chegou',
+                    'cpu': None, 'execucao_continua_desde': None,
+                    'eventos_pendentes': [], 'bloqueio_fim': None,
+                    'deadline_perdido': False,
+                })
+            else:
+                et.update({
+                    'liberacao_atual': visivel['liberacao'],
+                    'prazo_abs_atual': visivel['prazo_abs'],
+                    'restante_atual': visivel['restante'],
+                    'estado': visivel['estado'], 'cpu': visivel['cpu'],
+                    'execucao_continua_desde': visivel['execucao_continua_desde'],
+                    'eventos_pendentes': list(visivel['eventos_pendentes']),
+                    'bloqueio_fim': visivel['bloqueio_fim'],
+                    'deadline_perdido': any(j['deadline_perdido'] for j in ativos),
+                })
+
+    def _criar_job(self, tarefa):
+        et = self.estado_tarefas[tarefa.id]
+        numero = et['instancias_liberadas'] + 1
+        jid = self.proximo_job_id
+        self.proximo_job_id += 1
+        self.jobs[jid] = {
+            'id': jid, 'tarefa': tarefa.id, 'numero': numero,
+            'liberacao': self.tick, 'prazo_abs': self.tick + tarefa.prazo,
+            'restante': tarefa.duracao, 'estado': 'pronta', 'cpu': None,
+            'execucao_continua_desde': None,
+            'eventos_pendentes': list(tarefa.eventos),
+            'bloqueio_fim': None, 'deadline_perdido': False,
+            'motivo_suspensao': None, 'tempo_cpu': 0,
+            # --- métricas do capítulo 6 do livro (Tt, Tw, tr e trocas) ---
+            'ingresso': self.tick,
+            'conclusao': None,
+            'tempo_espera': 0,
+            'trocas': 0,
+            'primeira_execucao': None,
+        }
+        et['instancias_liberadas'] += 1
+        return jid
+
+    def _desvincular_job(self, jid):
+        for cpu in self.cpus:
+            if cpu.get('job') == jid:
+                cpu['job'] = None
+                cpu['tarefa'] = None
+                cpu['ligada'] = False
+        job = self.jobs[jid]
+        job['cpu'] = None
+        job['execucao_continua_desde'] = None
+
     def _processar_tick(self, tick):
-        """
-        Aplica, no instante `tick`, todas as transições de estado que não
-        dependem da decisão do escalonador: fim de bloqueios, liberação de
-        novas instâncias periódicas, início de novos bloqueios programados,
-        conclusão de instâncias/tarefas e verificação de estouro de prazo.
-        Devolve a lista de eventos ocorridos (para desenhar marcadores).
-        """
+        """Processa conclusões, desbloqueios, deadlines, eventos e liberações."""
         eventos = []
 
-        # A) fim de bloqueios/suspensões que estavam em andamento
-        for t in self.definicoes:
-            et = self.estado_tarefas[t.id]
-            if et['estado'] == 'suspensa' and et['bloqueio_fim'] == tick:
-                et['estado'] = 'pronta'
-                et['bloqueio_fim'] = None
+        # O intervalo anterior termina neste tick; concluir vem antes do deadline.
+        for jid, job in list(self.jobs.items()):
+            if job['estado'] == 'executando' and job['restante'] <= 0:
+                job['restante'] = 0
+                self._desvincular_job(jid)
+                job['estado'] = 'concluido'
+                job['conclusao'] = tick
+                tipo = 'conclusao_tarefa' if (
+                    self.estado_tarefas[job['tarefa']]['instancias_liberadas'] >= 10 and
+                    sum(1 for j in self.jobs.values()
+                        if j['tarefa'] == job['tarefa'] and j['estado'] == 'concluido') >= 10
+                ) else 'conclusao_instancia'
+                eventos.append({'tipo': tipo, 'tarefa': job['tarefa'], 'job': jid})
 
-        # B) liberação de novas instâncias periódicas (até a 10ª, conforme o enunciado)
-        for t in self.definicoes:
-            et = self.estado_tarefas[t.id]
-            if et['concluidas'] >= 10:
+        for jid, job in self.jobs.items():
+            if job['estado'] == 'suspensa' and job['bloqueio_fim'] is not None                     and tick >= job['bloqueio_fim']:
+                job['estado'] = 'pronta'
+                job['bloqueio_fim'] = None
+                job['motivo_suspensao'] = None
+
+        for jid, job in self.jobs.items():
+            if job['estado'] in ('pronta', 'executando', 'suspensa')                     and not job['deadline_perdido'] and job['restante'] > 0                     and tick >= job['prazo_abs']:
+                job['deadline_perdido'] = True
+                eventos.append({'tipo': 'deadline_miss', 'tarefa': job['tarefa'], 'job': jid})
+
+        # Eventos são medidos em tempo efetivo de CPU da ativação.
+        for jid, job in list(self.jobs.items()):
+            if job['estado'] not in ('pronta', 'executando'):
                 continue
-            proxima_liberacao = t.ingresso + et['instancias_liberadas'] * t.periodo
-            if tick == proxima_liberacao:
-                et['instancias_liberadas'] += 1
-                et['liberacao_atual'] = tick
-                et['prazo_abs_atual'] = tick + t.prazo
-                et['restante_atual'] = t.duracao
-                et['estado'] = 'pronta'
-                et['deadline_perdido'] = False
-                et['eventos_pendentes'] = list(t.eventos)  # cópia própria desta instância
-                et['execucao_continua_desde'] = None
-                eventos.append({'tipo': 'chegada', 'tarefa': t.id})
-
-        # C) início de bloqueios programados (lista_eventos) desta instância
-        for t in self.definicoes:
-            et = self.estado_tarefas[t.id]
-            if et['estado'] in ('pronta', 'executando') and et['liberacao_atual'] is not None:
-                deslocamento_atual = tick - et['liberacao_atual']
-                pendentes_restantes = []
-                ja_disparou_um = False
-                for (desloc, dur) in et['eventos_pendentes']:
-                    if not ja_disparou_um and desloc == deslocamento_atual:
-                        et['estado'] = 'suspensa'
-                        et['bloqueio_fim'] = tick + dur
-                        et['cpu'] = None
-                        et['execucao_continua_desde'] = None
-                        ja_disparou_um = True
-                        eventos.append({'tipo': 'suspensao', 'tarefa': t.id})
-                    else:
-                        pendentes_restantes.append((desloc, dur))
-                et['eventos_pendentes'] = pendentes_restantes
-
-        # D) conclusão de instância (o tempo restante chegou a zero)
-        for t in self.definicoes:
-            et = self.estado_tarefas[t.id]
-            if et['estado'] == 'executando' and et['restante_atual'] <= 0:
-                et['restante_atual'] = 0
-                et['concluidas'] += 1
-                et['cpu'] = None
-                et['execucao_continua_desde'] = None
-                if et['concluidas'] >= 10:
-                    et['estado'] = 'concluida'
-                    eventos.append({'tipo': 'conclusao_tarefa', 'tarefa': t.id})
+            restantes = []
+            disparou = False
+            for desloc, dur in job['eventos_pendentes']:
+                if not disparou and desloc <= job['tempo_cpu']:
+                    self._desvincular_job(jid)
+                    job['estado'] = 'suspensa'
+                    job['bloqueio_fim'] = tick + dur
+                    job['motivo_suspensao'] = 'evento'
+                    disparou = True
+                    eventos.append({'tipo': 'suspensao', 'tarefa': job['tarefa'], 'job': jid})
                 else:
-                    et['estado'] = 'nao_chegou'  # aguardando a próxima liberação periódica
-                    eventos.append({'tipo': 'conclusao_instancia', 'tarefa': t.id})
+                    restantes.append((desloc, dur))
+            job['eventos_pendentes'] = restantes
 
-        # E) verificação de estouro de prazo (a tarefa continua rodando, só é sinalizada)
         for t in self.definicoes:
             et = self.estado_tarefas[t.id]
-            if (et['estado'] in ('pronta', 'executando', 'suspensa')
-                    and et['prazo_abs_atual'] is not None
-                    and not et['deadline_perdido']
-                    and et['restante_atual'] > 0
-                    and tick >= et['prazo_abs_atual']):
-                et['deadline_perdido'] = True
-                eventos.append({'tipo': 'deadline_miss', 'tarefa': t.id})
+            if et['instancias_liberadas'] >= 10:
+                continue
+            proxima = t.ingresso + et['instancias_liberadas'] * t.periodo
+            if tick >= proxima:
+                jid = self._criar_job(t)
+                eventos.append({'tipo': 'chegada', 'tarefa': t.id, 'job': jid})
 
+        self._sincronizar_tcbs()
         return eventos
 
+    def _chave_job(self, jid, incumbentes):
+        job = self.jobs[jid]
+        tarefa = self.tarefas_por_id[job['tarefa']]
+        primaria = tarefa.periodo if self.algoritmo == 'RM' else job['prazo_abs']
+        return (primaria, 0 if jid in incumbentes else 1,
+                job['prazo_abs'], tarefa.ingresso, tarefa.duracao)
+
     def _escalonar(self):
-        """
-        Decide, a partir do estado corrente (já atualizado por
-        `_processar_tick`), quais tarefas ocupam quais CPUs a partir de
-        agora. A "prioridade primária" (o que diferencia RM de EDF, ou de
-        qualquer outro algoritmo futuro) é obtida do registro plugável
-        ALGORITMOS_DE_ESCALONAMENTO — este método em si NUNCA precisa ser
-        alterado para adicionar um novo algoritmo. Os 5 critérios de
-        desempate exigidos são aplicados na ordem definida no enunciado.
-        Devolve a lista de eventos de "sorteio" ocorridos (para exibir o
-        marcador gráfico correspondente).
-        """
-        eventos_sorteio = []
+        """Aplica RM/EDF e os cinco desempates exigidos pelo enunciado."""
+        eventos = []
+        elegiveis = [jid for jid, j in self.jobs.items()
+                     if j['estado'] in ('pronta', 'executando')]
+        incumbentes = {cpu.get('job') for cpu in self.cpus if cpu.get('job') is not None}
+        elegiveis.sort(key=lambda jid: self._chave_job(jid, incumbentes))
+        vagas = min(self.num_cpus, len(elegiveis))
 
-        elegiveis = [
-            t.id for t in self.definicoes
-            if self.estado_tarefas[t.id]['estado'] in ('pronta', 'executando')
-        ]
+        if 0 < vagas < len(elegiveis):
+            fronteira = self._chave_job(elegiveis[vagas - 1], incumbentes)
+            empatados = [jid for jid in elegiveis
+                         if self._chave_job(jid, incumbentes) == fronteira]
+            inicio = min((elegiveis.index(jid) for jid in empatados), default=vagas)
+            disputadas = vagas - inicio
+            if 0 < disputadas < len(empatados):
+                escolhidos = self.rng.sample(empatados, disputadas)
+                antes = [jid for jid in elegiveis[:inicio] if jid not in empatados]
+                depois = [jid for jid in elegiveis if jid not in empatados]
+                elegiveis = antes + escolhidos + [jid for jid in depois if jid not in antes]
+                for jid in escolhidos:
+                    eventos.append({'tipo': 'sorteio',
+                                    'tarefa': self.jobs[jid]['tarefa'], 'job': jid})
 
-        if not elegiveis:
-            for cpu in self.cpus:
-                cpu['ligada'] = False
-                cpu['tarefa'] = None
-            return eventos_sorteio
-
-        # quem estava executando IMEDIATAMENTE ANTES desta decisão, e para
-        # quem, dentre esses, o quantum já expirou (perdendo a "vantagem")
-        estava_executando_antes = set()
-        quantum_expirou = set()
-        for cpu in self.cpus:
-            tid = cpu['tarefa']
-            if tid is not None:
-                estava_executando_antes.add(tid)
-                inicio = self.estado_tarefas[tid]['execucao_continua_desde']
-                if inicio is not None and (self.tick - inicio) >= self.quantum:
-                    quantum_expirou.add(tid)
-
-        # critério primário: delegado inteiramente ao algoritmo registrado em
-        # ALGORITMOS_DE_ESCALONAMENTO (ver seção 0, topo do arquivo). Trocar de
-        # algoritmo, ou adicionar um novo, nunca exige tocar neste método.
-        funcao_prioridade_primaria = ALGORITMOS_DE_ESCALONAMENTO[self.algoritmo]['funcao']
-
-        def chave_prioridade(tid):
-            tarefa = self.tarefas_por_id[tid]
-            et = self.estado_tarefas[tid]
-            prioridade_primaria = funcao_prioridade_primaria(tarefa, et)
-            # critério de desempate 1: já estava executando (e não perdeu o quantum)
-            tem_vantagem_de_incumbente = (
-                tid in estava_executando_antes and tid not in quantum_expirou
-            )
-            chave_incumbente = 0 if tem_vantagem_de_incumbente else 1
-            # critérios de desempate 2, 3 e 4:
-            return (prioridade_primaria, chave_incumbente,
-                    et['prazo_abs_atual'], tarefa.ingresso, tarefa.duracao)
-
-        elegiveis.sort(key=chave_prioridade)
-
-        n_vagas = min(self.num_cpus, len(elegiveis))
-
-        # critério de desempate 5 (sorteio): só é necessário quando um grupo de
-        # tarefas EMPATADAS em todos os critérios anteriores disputa a(s)
-        # última(s) vaga(s) disponível(is) e nem todas cabem.
-        if 0 < n_vagas < len(elegiveis):
-            chave_da_fronteira = chave_prioridade(elegiveis[n_vagas - 1])
-            grupo_empatado = [tid for tid in elegiveis if chave_prioridade(tid) == chave_da_fronteira]
-            if len(grupo_empatado) > 1:
-                indice_inicio_grupo = elegiveis.index(grupo_empatado[0])
-                vagas_disputadas = n_vagas - indice_inicio_grupo
-                if 0 < vagas_disputadas < len(grupo_empatado):
-                    sorteados = random.sample(grupo_empatado, vagas_disputadas)
-                    for tid in sorteados:
-                        eventos_sorteio.append({'tipo': 'sorteio', 'tarefa': tid})
-                    nova_ordem = []
-                    usados = 0
-                    for tid in elegiveis:
-                        if tid in grupo_empatado:
-                            if usados < len(sorteados):
-                                nova_ordem.append(sorteados[usados])
-                                usados += 1
-                        else:
-                            nova_ordem.append(tid)
-                    elegiveis = nova_ordem
-
-        selecionados = elegiveis[:n_vagas]
-        nao_selecionados = elegiveis[n_vagas:]
-
-        # ---- atribuição de CPU física: tenta manter continuidade visual ----
-        cpu_da_tarefa_antes = {
-            cpu['tarefa']: idx for idx, cpu in enumerate(self.cpus) if cpu['tarefa'] is not None
-        }
+        selecionados = elegiveis[:vagas]
+        anteriores = {cpu.get('job'): idx for idx, cpu in enumerate(self.cpus)
+                      if cpu.get('job') is not None}
         atribuicoes = {}
         restantes = list(selecionados)
-        for tid in list(restantes):
-            if tid in cpu_da_tarefa_antes:
-                idx = cpu_da_tarefa_antes[tid]
-                atribuicoes[idx] = tid
-                restantes.remove(tid)
-        cpus_livres = [i for i in range(self.num_cpus) if i not in atribuicoes]
-        for idx, tid in zip(cpus_livres, restantes):
-            atribuicoes[idx] = tid
+        for jid in list(restantes):
+            if jid in anteriores:
+                atribuicoes[anteriores[jid]] = jid
+                restantes.remove(jid)
+        livres = [i for i in range(self.num_cpus) if i not in atribuicoes]
+        for idx, jid in zip(livres, restantes):
+            atribuicoes[idx] = jid
+
+        for jid, job in self.jobs.items():
+            if job['estado'] == 'executando' and jid not in selecionados:
+                job['estado'] = 'pronta'
+                job['cpu'] = None
+                job['execucao_continua_desde'] = None
 
         for idx, cpu in enumerate(self.cpus):
-            tid = atribuicoes.get(idx)
-            if tid is None:
-                cpu['ligada'] = False
-                cpu['tarefa'] = None
+            jid = atribuicoes.get(idx)
+            if jid is None:
+                cpu.update({'ligada': False, 'tarefa': None, 'job': None})
                 continue
-            cpu['ligada'] = True
-            cpu['tarefa'] = tid
-            et = self.estado_tarefas[tid]
-            # começa uma fatia nova (reinicia o contador de quantum) se a
-            # tarefa não estava executando nesta MESMA cpu antes, OU se o
-            # quantum acabou de expirar (mesmo que ela continue na mesma cpu)
-            comeca_fatia_nova = (
-                et['estado'] != 'executando' or et['cpu'] != idx or tid in quantum_expirou
-            )
-            if comeca_fatia_nova:
-                et['execucao_continua_desde'] = self.tick
-            et['estado'] = 'executando'
-            et['cpu'] = idx
+            job = self.jobs[jid]
+            nova_fatia = job['estado'] != 'executando' or job['cpu'] != idx
+            cpu.update({'ligada': True, 'tarefa': job['tarefa'], 'job': jid})
+            job['estado'] = 'executando'
+            job['cpu'] = idx
+            if nova_fatia:
+                # troca de contexto: o livro conta cada mudança de tarefa no processador
+                job['trocas'] += 1
+                job['execucao_continua_desde'] = self.tick
 
-        for tid in nao_selecionados:
-            et = self.estado_tarefas[tid]
-            if et['estado'] == 'executando':
-                et['estado'] = 'pronta'
-            et['cpu'] = None
-            et['execucao_continua_desde'] = None
-
-        return eventos_sorteio
-
-    def _calcular_proximo_evento(self):
-        """
-        Calcula o próximo tick (estritamente maior que o atual) em que algo
-        relevante muda no sistema. É este cálculo que permite "pular" o
-        tempo sem precisar avançar tick a tick — ver PREMISSA/explicação no
-        topo da classe Simulador.
-        """
-        candidatos = []
-        for t in self.definicoes:
-            et = self.estado_tarefas[t.id]
-
-            if et['concluidas'] < 10:
-                proxima_liberacao = t.ingresso + et['instancias_liberadas'] * t.periodo
-                candidatos.append(proxima_liberacao)
-
-            if et['estado'] == 'executando':
-                candidatos.append(self.tick + et['restante_atual'])  # término natural
-                if et['execucao_continua_desde'] is not None:
-                    candidatos.append(et['execucao_continua_desde'] + self.quantum)
-
-            if et['estado'] == 'suspensa' and et['bloqueio_fim'] is not None:
-                candidatos.append(et['bloqueio_fim'])
-
-            if et['estado'] in ('pronta', 'executando') and et['liberacao_atual'] is not None:
-                for (desloc, _dur) in et['eventos_pendentes']:
-                    candidatos.append(et['liberacao_atual'] + desloc)
-                if et['prazo_abs_atual'] is not None and not et['deadline_perdido']:
-                    candidatos.append(et['prazo_abs_atual'])
-
-        candidatos = [c for c in candidatos if c > self.tick]
-        return min(candidatos) if candidatos else None
+        self._sincronizar_tcbs()
+        return eventos
 
     def passo(self):
-        """
-        Executa UM passo da simulação: avança diretamente até o próximo
-        evento relevante (ver `_calcular_proximo_evento`), contabiliza o
-        tempo de CPU consumido nesse intervalo por cada tarefa em execução,
-        processa as transições de estado no novo tick e roda o escalonador.
-        Devolve True se avançou, False se a simulação já estava finalizada.
-        """
+        """Executa exatamente um tick: [tick, tick+1)."""
         if self.finalizado:
             return False
-
-        tick_alvo = self._calcular_proximo_evento()
-        if tick_alvo is None:
-            self.finalizado = True
-            return False
-
-        delta = tick_alvo - self.tick
-        blocos = []  # blocos de Gantt referentes ao intervalo [self.tick, tick_alvo)
-
-        for idx_cpu, cpu in enumerate(self.cpus):
-            tid = cpu['tarefa']
-            if tid is not None:
-                et = self.estado_tarefas[tid]
-                et['restante_atual'] -= delta
-                blocos.append((tid, idx_cpu, self.tick, tick_alvo, 'executando'))
-
-        for t in self.definicoes:
-            if self.estado_tarefas[t.id]['estado'] == 'suspensa':
-                blocos.append((t.id, None, self.tick, tick_alvo, 'suspensa'))
-
-        self.tick = tick_alvo
+        inicio, fim = self.tick, self.tick + 1
+        blocos = []
+        for idx, cpu in enumerate(self.cpus):
+            jid = cpu.get('job')
+            if jid is not None:
+                job = self.jobs[jid]
+                job['restante'] -= 1
+                job['tempo_cpu'] += 1
+                if job['primeira_execucao'] is None:
+                    # tempo de resposta (tr) do livro: da chegada ao primeiro uso de CPU
+                    job['primeira_execucao'] = inicio
+                blocos.append((job['tarefa'], idx, inicio, fim, 'executando'))
+        for job in self.jobs.values():
+            if job['estado'] == 'suspensa':
+                blocos.append((job['tarefa'], None, inicio, fim, 'suspensa'))
+            elif job['estado'] == 'pronta' and job['conclusao'] is None:
+                # tempo de espera (tw) do livro: tempo na fila global sem executar
+                job['tempo_espera'] += 1
+        self.tick = fim
         eventos = self._processar_tick(self.tick)
         eventos += self._escalonar()
+        self._sincronizar_tcbs()
+        self.finalizado = all(
+            self.estado_tarefas[t.id]['instancias_liberadas'] >= 10 and
+            self.estado_tarefas[t.id]['concluidas'] >= 10
+            for t in self.definicoes
+        )
         self._registrar_snapshot(eventos, blocos)
-
-        if all(self.estado_tarefas[t.id]['estado'] == 'concluida' for t in self.definicoes):
-            self.finalizado = True
-
         return True
 
-    def executar_completo(self, limite_de_seguranca=200_000):
-        """
-        Executa a simulação inteira sem intervenção humana (Modo Completo),
-        até que todas as tarefas completem as 10 instâncias. O limite de
-        segurança evita um laço infinito caso alguma configuração inválida
-        impeça a simulação de terminar.
-        """
+    def executar_completo(self, limite_de_seguranca=200000):
+        passos = 0
         while not self.finalizado:
-            if self.tick > limite_de_seguranca:
-                raise RuntimeError(
-                    "A simulação ultrapassou o limite de segurança de ticks. "
-                    "Verifique se todas as tarefas conseguem completar 10 "
-                    "instâncias (ex.: duração x tarefas concorrentes não "
-                    "deveria exceder a capacidade das CPUs indefinidamente)."
-                )
+            if passos >= limite_de_seguranca:
+                raise RuntimeError('A simulação excedeu o limite de segurança de passos.')
+            self.passo()
+            passos += 1
+        self.indice_historico = len(self.historico) - 1
+
+    def _restaurar_snapshot(self, indice):
+        snap = self.historico[indice]
+        self.tick = snap['tick']
+        self.estado_tarefas = copy.deepcopy(snap['estado_tarefas'])
+        self.jobs = copy.deepcopy(snap['jobs'])
+        self.cpus = copy.deepcopy(snap['cpus'])
+        self.proximo_job_id = snap['proximo_job_id']
+        self.finalizado = snap['finalizado']
+        self.rng.setstate(snap['rng_state'])
+        self.indice_historico = indice
+
+    def avancar(self):
+        if self.indice_historico < len(self.historico) - 1:
+            self._restaurar_snapshot(self.indice_historico + 1)
+            return True
+        return self.passo()
+
+    def retroceder(self):
+        if self.indice_historico <= 0:
+            return False
+        self._restaurar_snapshot(self.indice_historico - 1)
+        return True
+
+    def aplicar_edicao_e_reconstruir(self, indice_alvo=None):
+        """Reconstrói parâmetros estáticos até o tick selecionado."""
+        alvo_tick = self.tick if indice_alvo is None else self.historico[indice_alvo]['tick']
+        self.tarefas_por_id = {t.id: t for t in self.definicoes}
+        self.reiniciar()
+        while self.tick < alvo_tick and not self.finalizado:
             self.passo()
         self.indice_historico = len(self.historico) - 1
 
-    # -------------------------- navegação (debugger) --------------------------
-    def avancar(self):
-        """Avança o CURSOR de exibição um passo (calcula um novo passo se necessário)."""
-        if self.indice_historico < len(self.historico) - 1:
-            self.indice_historico += 1
-            return True
-        if self.finalizado:
-            return False
-        avancou = self.passo()
-        if avancou:
-            self.indice_historico = len(self.historico) - 1
-        return avancou
+    def alterar_estado_tarefa(self, tid, novo_estado):
+        """Altera semanticamente o job visível no ponto atual e cria uma ramificação."""
+        if novo_estado not in ('pronta', 'suspensa'):
+            raise ValueError('O estado manual deve ser pronta ou suspensa.')
+        job = self._job_visivel(tid)
+        if job is None:
+            raise ValueError('A tarefa não possui ativação pendente neste tick.')
+        self.historico = self.historico[:self.indice_historico + 1]
+        self._desvincular_job(job['id'])
+        job['estado'] = novo_estado
+        if novo_estado == 'suspensa':
+            job['bloqueio_fim'] = self.tick + 1
+        else:
+            job['bloqueio_fim'] = None
+        self.finalizado = False
+        eventos = self._escalonar()
+        self._sincronizar_tcbs()
+        self._substituir_snapshot_atual(eventos)
 
-    def retroceder(self):
-        """Retrocede o CURSOR de exibição um passo (não recalcula nada)."""
-        if self.indice_historico > 0:
-            self.indice_historico -= 1
-            return True
-        return False
+    def _substituir_snapshot_atual(self, eventos):
+        anterior = self.historico[self.indice_historico]
+        novo = self._criar_snapshot(eventos, anterior.get('blocos_intervalo', []))
+        self.historico[self.indice_historico] = novo
 
-    # -------------------------- histórico / Gantt --------------------------
-    def _registrar_snapshot(self, eventos, blocos_intervalo):
-        """
-        Guarda uma "fotografia" completa e independente do estado do sistema
-        (cópia profunda) para permitir a navegação livre para frente/trás
-        exigida pelo modo passo-a-passo, sem qualquer risco de uma tela
-        antiga ser afetada por mutações posteriores do estado ao vivo.
-        """
-        self.historico.append({
+    def _criar_snapshot(self, eventos, blocos_intervalo):
+        return {
             'tick': self.tick,
             'estado_tarefas': copy.deepcopy(self.estado_tarefas),
+            'jobs': copy.deepcopy(self.jobs),
             'cpus': copy.deepcopy(self.cpus),
-            'eventos': eventos,
-            'blocos_intervalo': blocos_intervalo,
-        })
+            'eventos': copy.deepcopy(eventos),
+            'blocos_intervalo': copy.deepcopy(blocos_intervalo),
+            'proximo_job_id': self.proximo_job_id,
+            'finalizado': self.finalizado,
+            'rng_state': self.rng.getstate(),
+        }
+
+    def _registrar_snapshot(self, eventos, blocos_intervalo):
+        self.historico.append(self._criar_snapshot(eventos, blocos_intervalo))
+        self.indice_historico = len(self.historico) - 1
 
     def obter_todos_os_blocos(self, ate_indice=None):
-        """
-        Junta, em uma única lista, todos os blocos de Gantt (execução e
-        suspensão) e todos os eventos pontuais (chegada, conclusão,
-        estouro de prazo, sorteio) do início da simulação até o índice do
-        histórico indicado (por padrão, até o final). Usado tanto pelo
-        desenho no Canvas quanto pela exportação SVG.
-        """
         if ate_indice is None:
             ate_indice = len(self.historico) - 1
         blocos, eventos = [], []
-        for i in range(1, ate_indice + 1):
+        for i in range(0, ate_indice + 1):
             blocos.extend(self.historico[i]['blocos_intervalo'])
             for ev in self.historico[i]['eventos']:
                 eventos.append(dict(ev, tick=self.historico[i]['tick']))
         return blocos, eventos
 
+    # --------------------------- métricas do livro ---------------------------
+    def calcular_metricas(self):
+        """Consolida as métricas do capítulo 6 do livro (Tt, Tw, tr e trocas).
+
+        Para cada tarefa considera todas as ativações concluídas, que é o
+        equivalente do job por ativação exigido pelo capítulo 4. Também
+        devolve o tempo total de processamento e a eficiência do uso das CPUs,
+        que o livro mede na seção 5.2 como E = tq / (tq + ttc).
+        """
+        linhas = []
+        total_trocas = 0
+        for t in sorted(self.definicoes, key=lambda x: x.id):
+            jobs = [j for j in self.jobs.values()
+                    if j['tarefa'] == t.id and j['estado'] == 'concluido']
+            if not jobs:
+                continue
+            tt = sum((j['conclusao'] - j['ingresso']) for j in jobs) / len(jobs)
+            tw = sum(j['tempo_espera'] for j in jobs) / len(jobs)
+            tr = sum((j['primeira_execucao'] - j['ingresso'])
+                     for j in jobs if j['primeira_execucao'] is not None)
+            com_resposta = sum(1 for j in jobs if j['primeira_execucao'] is not None)
+            trocas = sum(j['trocas'] for j in jobs)
+            total_trocas += trocas
+            linhas.append({
+                'tarefa': t.id,
+                'periodo': t.periodo,
+                'duracao': t.duracao,
+                'prazo': t.prazo,
+                'ativacoes': len(jobs),
+                'tt': tt,
+                'tw': tw,
+                'tr': (tr / com_resposta) if com_resposta else 0.0,
+                'trocas': trocas,
+                'deadlines_perdidos': sum(1 for j in jobs if j['deadline_perdido']),
+            })
+
+        if not self.historico:
+            return {'linhas': linhas, 'resumo': {}}
+        tick_final = self.historico[-1]['tick']
+        tick_inicial = self.historico[0]['tick']
+        horizonte = max(1, tick_final - tick_inicial)
+        tempo_processamento = sum(j['tempo_cpu'] for j in self.jobs.values())
+        # capacidade teórica = nº de CPUs x ticks simulados; a diferença é ociosidade
+        capacidade = max(1, self.num_cpus * horizonte)
+        resumo = {
+            'algoritmo': self.algoritmo,
+            'tick_inicial': tick_inicial,
+            'tick_final': tick_final,
+            'horizonte': horizonte,
+            'tempo_processamento': tempo_processamento,
+            'capacidade_cpu': capacidade,
+            'aproveitamento': tempo_processamento / capacidade,
+            'ociosidade': 1 - (tempo_processamento / capacidade),
+            'trocas_totais': total_trocas,
+            'deadlines_perdidos': sum(
+                1 for j in self.jobs.values() if j['deadline_perdido']),
+        }
+        return {'linhas': linhas, 'resumo': resumo}
+
+    def texto_metricas(self):
+        """Formata as métricas para exibição na interface."""
+        dados = self.calcular_metricas()
+        resumo = dados.get('resumo') or {}
+        partes = []
+        if resumo:
+            partes.append(
+                f"Algoritmo: {resumo['algoritmo']}  |  "
+                f"Ticks: {resumo['tick_inicial']} a {resumo['tick_final']} "
+                f"({resumo['horizonte']})  |  CPUs: {self.num_cpus}")
+            partes.append(
+                f"Tempo de processamento: {resumo['tempo_processamento']}  |  "
+                f"Capacidade: {resumo['capacidade_cpu']}  |  "
+                f"Aproveitamento: {resumo['aproveitamento']:.1%}  |  "
+                f"Ociosidade: {resumo['ociosidade']:.1%}")
+            partes.append(
+                f"Trocas de contexto: {resumo['trocas_totais']}  |  "
+                f"Deadlines perdidos: {resumo['deadlines_perdidos']}")
+        partes.append("")
+        partes.append(f"{'Tar':>4} {'Ativ':>5} {'Tt':>7} {'Tw':>7} {'Tr':>7} "
+                      f"{'Trocas':>7} {'Perdas':>7}")
+        for linha in dados['linhas']:
+            partes.append(
+                f"{linha['tarefa']:>4} {linha['ativacoes']:>5} "
+                f"{linha['tt']:>7.1f} {linha['tw']:>7.1f} {linha['tr']:>7.1f} "
+                f"{linha['trocas']:>7} {linha['deadlines_perdidos']:>7}")
+        return "\n".join(partes)
 
 # ==============================================================================
 # 4) EXPORTAÇÃO NATIVA EM SVG (pura manipulação de strings, sem bibliotecas)
@@ -1081,6 +1121,10 @@ class Aplicacao(tk.Tk):
                    command=self.abrir_nova_tarefa).pack(side=tk.LEFT, padx=6)
         ttk.Button(barra, text="✎ Editar tarefa...", style="Secondary.TButton",
                    command=self.abrir_editor_de_tarefa).pack(side=tk.LEFT, padx=6)
+        ttk.Button(barra, text="Estado...", style="Secondary.TButton",
+                   command=self.abrir_editor_de_estado).pack(side=tk.LEFT, padx=6)
+        ttk.Button(barra, text="Métricas...", style="Secondary.TButton",
+                   command=self.abrir_relatorio_metricas).pack(side=tk.LEFT, padx=6)
         ttk.Button(barra, text="💾 Exportar SVG...", style="Secondary.TButton",
                    command=self.exportar_para_svg).pack(side=tk.LEFT, padx=6)
 
@@ -1162,7 +1206,7 @@ class Aplicacao(tk.Tk):
     def _carregar_arquivo_de_caminho(self, caminho):
         try:
             algoritmo, quantum, num_cpus, tarefas, avisos = carregar_configuracao(caminho)
-        except ValueError as erro:
+        except (ValueError, OSError, UnicodeError) as erro:
             messagebox.showerror("Erro ao carregar arquivo", str(erro))
             return
 
@@ -1475,7 +1519,7 @@ class Aplicacao(tk.Tk):
                 duracao = int(campos["duracao"].get())
                 periodo = int(campos["periodo"].get())
                 prazo = int(campos["prazo"].get())
-                if duracao <= 0 or periodo <= 0 or prazo <= 0:
+                if ingresso < 0 or duracao <= 0 or periodo <= 0 or prazo <= 0:
                     raise ValueError
             except ValueError:
                 messagebox.showerror(
@@ -1535,6 +1579,88 @@ class Aplicacao(tk.Tk):
         ttk.Button(quadro_botoes, text="Remover tarefa", style="Secondary.TButton",
                    command=remover).pack(side=tk.LEFT, padx=6)
 
+    def abrir_editor_de_estado(self):
+        """Altera o estado dinâmico no tick exibido e descarta o futuro antigo."""
+        if self.simulador is None:
+            messagebox.showinfo("Aviso", "Carregue uma configuração primeiro.")
+            return
+        janela = tk.Toplevel(self)
+        janela.title("Editar estado atual")
+        janela.geometry("430x250")
+        janela.configure(bg=COR_FUNDO_APP)
+        janela.transient(self)
+        janela.grab_set()
+        tk.Label(janela, text="Estado no tick selecionado", bg=COR_FUNDO_APP,
+                 fg=COR_TEXTO_SECUNDARIO, font=FONTE_TITULO).pack(anchor="w", padx=18, pady=(18, 10))
+        quadro = tk.Frame(janela, bg=COR_FUNDO_APP)
+        quadro.pack(fill=tk.X, padx=18)
+        ids = sorted(self.simulador.tarefas_por_id)
+        var_id = tk.StringVar(value=str(ids[0]))
+        var_estado = tk.StringVar(value="pronta")
+        tk.Label(quadro, text="Tarefa:", bg=COR_FUNDO_APP).grid(row=0, column=0, sticky="w", pady=6)
+        ttk.Combobox(quadro, textvariable=var_id, values=[str(i) for i in ids],
+                     state="readonly").grid(row=0, column=1, sticky="ew", pady=6)
+        tk.Label(quadro, text="Novo estado:", bg=COR_FUNDO_APP).grid(row=1, column=0, sticky="w", pady=6)
+        ttk.Combobox(quadro, textvariable=var_estado, values=["pronta", "suspensa"],
+                     state="readonly").grid(row=1, column=1, sticky="ew", pady=6)
+        quadro.columnconfigure(1, weight=1)
+        tk.Label(janela,
+                 text="O estado executando é sempre decidido pelo escalonador.\n"
+                      "Uma suspensão manual permanece por um tick.",
+                 bg=COR_FUNDO_APP, fg=COR_TEXTO_SECUNDARIO, justify=tk.LEFT).pack(anchor="w", padx=18, pady=8)
+        def aplicar_estado():
+            try:
+                self.simulador.alterar_estado_tarefa(int(var_id.get()), var_estado.get())
+            except ValueError as erro:
+                messagebox.showerror("Alteração inválida", str(erro), parent=janela)
+                return
+            self.svg_exportado_automaticamente = False
+            self._apos_mudanca_de_estado()
+            janela.destroy()
+        ttk.Button(janela, text="Aplicar", style="Accent.TButton",
+                   command=aplicar_estado).pack(pady=10)
+
+    def _ociosidade_por_cpu(self):
+        """Soma os ticks em que cada CPU ficou desligada (requisito 1.2)."""
+        total = len(self.simulador.cpus)
+        desligado = [0] * total
+        blocos, _ = self.simulador.obter_todos_os_blocos()
+        ocupadas = set()
+        for (_tid, idx_cpu, ini, fim, estado) in blocos:
+            if estado != 'executando' or idx_cpu is None:
+                continue
+            for t in range(ini, fim):
+                ocupadas.add((idx_cpu, t))
+        for (idx_cpu, _t) in ocupadas:
+            desligado[idx_cpu] = desligado[idx_cpu]
+        ticks = max(0, self.simulador.historico[-1]['tick'] - self.simulador.historico[0]['tick']) \
+            if self.simulador.historico else 0
+        for idx in range(total):
+            ativos = sum(1 for (_c, t) in ocupadas if _c == idx)
+            desligado[idx] = max(0, ticks - ativos)
+        partes = [f"CPU{i}={desligado[i]}" for i in range(total) if desligado[i] > 0]
+        return ", ".join(partes)
+
+
+    def abrir_relatorio_metricas(self):
+        """Mostra Tt, Tw, tr, trocas e aproveitamento (capítulo 6 do livro)."""
+        if self.simulador is None:
+            messagebox.showinfo("Aviso", "Carregue uma configuração primeiro.")
+            return
+        janela = tk.Toplevel(self)
+        janela.title("Métricas da simulação")
+        janela.geometry("560x460")
+        janela.configure(bg=COR_FUNDO_APP)
+        janela.transient(self)
+        tk.Label(janela, text="Métricas de escalonamento", bg=COR_FUNDO_APP,
+                 fg=COR_TEXTO_SECUNDARIO, font=FONTE_TITULO).pack(anchor="w", padx=16, pady=(14, 8))
+        texto = tk.Text(janela, wrap="none", font=("Consolas", 9), height=20)
+        texto.insert("1.0", self.simulador.texto_metricas())
+        texto.configure(state="disabled")
+        texto.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 10))
+        ttk.Button(janela, text="Fechar", style="Accent.TButton",
+                   command=janela.destroy).pack(pady=(0, 14))
+
     def exportar_para_svg(self):
         if self.simulador is None or not self.simulador.historico:
             messagebox.showinfo("Aviso", "Carregue e execute (ao menos parcialmente) uma simulação primeiro.")
@@ -1562,8 +1688,8 @@ class Aplicacao(tk.Tk):
         try:
             exportar_svg(caminho, self.simulador)
             self.rotulo_status.config(text=self.rotulo_status.cget("text") + f"   |   SVG salvo automaticamente em: {caminho}")
-        except Exception:
-            pass  # a exportação automática não deve interromper a simulação em caso de falha de disco, etc.
+        except Exception as erro:
+            messagebox.showerror('Erro ao exportar automaticamente', str(erro))
 
     # --------------------------- atualização de tela ---------------------------
     def _apos_mudanca_de_estado(self):
@@ -1596,6 +1722,15 @@ class Aplicacao(tk.Tk):
         )
         if s.finalizado and s.indice_historico == len(s.historico) - 1:
             texto += "   |   SIMULAÇÃO FINALIZADA"
+        snap = s.historico[s.indice_historico]
+        jobs = snap.get('jobs', {})
+        prontos = sum(1 for j in jobs.values() if j['estado'] == 'pronta')
+        executando = sum(1 for j in jobs.values() if j['estado'] == 'executando')
+        suspensos = sum(1 for j in jobs.values() if j['estado'] == 'suspensa')
+        texto += f"   |   Jobs: {prontos} prontos, {executando} executando, {suspensos} suspensos"
+        ociosidade = self._ociosidade_por_cpu()
+        if ociosidade:
+            texto += "   |   CPUs desligadas (ticks): " + ociosidade
         self.rotulo_status.config(text=texto)
 
     def _atualizar_painel_tarefas(self):
