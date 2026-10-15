@@ -29,6 +29,7 @@ COR_TEXTO = "#222222"          # cor padrão usada para textos
 COR_CHEGADA = "#2E7D32"     # cor do marcador de chegada de instância
 COR_DEADLINE_MISS = "#D32F2F"  # cor usada para indicar uma falha de deadline (OU SEJA, quando perde o prazo)
 COR_SORTEIO = "#F9A825"  # cor usada para indicar um sorteio
+ESPACO_REGUA = 24          # altura reservada à régua de ticks, logo abaixo das linhas de tarefa
 MAX_CPUS = 64              # limite defensivo do simulador
 
 
@@ -78,7 +79,7 @@ def registrar_algoritmo(nome, funcao_prioridade_primaria, descricao=""):
     """
     Registra (ou substitui) um algoritmo de escalonamento.
 
-    `funcao_prioridade_primaria(tarefa, estado_dinamico) -> valor comparável`
+    `funcao_prioridade_primaria(tarefa, job) -> valor comparável (job é a ativação sendo avaliada)`
     onde MENOR valor significa MAIOR prioridade (é isso que o Python usa
     naturalmente ao ordenar tuplas/listas com `sort`/`min`).
 
@@ -86,7 +87,7 @@ def registrar_algoritmo(nome, funcao_prioridade_primaria, descricao=""):
     pelo prazo RELATIVO, e não pelo período como no RM):
         registrar_algoritmo(
             'DM',
-            lambda tarefa, et: tarefa.prazo,
+            lambda tarefa, job: tarefa.prazo,
             descricao="Deadline Monotonic (prioridade fixa pelo prazo relativo)",
         )
     """
@@ -101,12 +102,12 @@ def registrar_algoritmo(nome, funcao_prioridade_primaria, descricao=""):
 
 registrar_algoritmo(
     'RM',
-    lambda tarefa, et: tarefa.periodo,
+    lambda tarefa, job: tarefa.periodo,
     descricao="Rate Monotonic (prioridade fixa: menor período primeiro)",
 )
 registrar_algoritmo(
     'EDF',
-    lambda tarefa, et: et['prazo_abs_atual'],
+    lambda tarefa, job: job['prazo_abs'],
     descricao="Earliest Deadline First (prioridade dinâmica: menor prazo absoluto primeiro)",
 )
 
@@ -215,7 +216,7 @@ def carregar_configuracao(caminho):
         raise ValueError(f"Arquivo não encontrado: {caminho}")
 
     # Abre o arquivo de texto com codificação UTF-8
-    with open(caminho, 'r', encoding='utf-8') as arquivo:
+    with open(caminho, 'r', encoding='utf-8-sig') as arquivo:
         linhas_brutas = arquivo.readlines()
 
     # Limpeza preliminar: remove espaços extras e descarta linhas totalmente vazias
@@ -350,7 +351,14 @@ def carregar_configuracao(caminho):
             raise ValueError(f"Linha {numero_linha}: prazo inválido ('{prazo_str}').")
 
         # Processa a string de eventos de bloqueio
-        eventos = _parsear_eventos(eventos_str, f"Linha {numero_linha}, tarefa {id_tarefa}")
+        try:
+            eventos = _parsear_eventos(eventos_str, f"Linha {numero_linha}, tarefa {id_tarefa}")
+        except ValueError as erro_eventos:
+            # Projeto A: a lista_eventos só é tratada no Projeto B (req. 3.3.5).
+            # Conteúdo fora do formato provisório é ignorado com aviso, para
+            # nunca recusar um arquivo que respeita o formato do enunciado.
+            avisos.append(f"{erro_eventos} Eventos desta tarefa foram ignorados no Projeto A.")
+            eventos = []
 
         # Instancia o objeto Tarefa e adiciona à lista válida
         tarefas.append(Tarefa(id_tarefa, cor, ingresso, duracao, periodo, prazo, eventos))
@@ -558,14 +566,34 @@ class Simulador:
     def _chave_job(self, jid, incumbentes):
         job = self.jobs[jid]
         tarefa = self.tarefas_por_id[job['tarefa']]
-        primaria = tarefa.periodo if self.algoritmo == 'RM' else job['prazo_abs']
+        # Prioridade primária vem do registro plugável (req. 4.2): um algoritmo novo
+        # registrado passa a valer sem alterar o núcleo da simulação.
+        primaria = ALGORITMOS_DE_ESCALONAMENTO[self.algoritmo]['funcao'](tarefa, job)
         return (primaria, 0 if jid in incumbentes else 1,
                 job['prazo_abs'], tarefa.ingresso, tarefa.duracao)
+
+    def _jobs_mais_antigos_por_tarefa(self):
+        """Ids das ativações que podem competir por CPU.
+
+        Uma tarefa é um fluxo sequencial de execução: só a ativação não
+        concluída mais antiga de cada tarefa pode ocupar uma CPU. As mais
+        novas ficam na fila aguardando a predecessora terminar. Sem isso, a
+        mesma tarefa executaria em duas CPUs ao mesmo tempo quando a duração
+        excede o período."""
+        mais_antigo = {}
+        for jid, j in self.jobs.items():
+            if j['estado'] == 'concluido':
+                continue
+            atual = mais_antigo.get(j['tarefa'])
+            if atual is None or j['numero'] < self.jobs[atual]['numero']:
+                mais_antigo[j['tarefa']] = jid
+        return set(mais_antigo.values())
 
     def _escalonar(self):
         """Aplica RM/EDF e os cinco desempates exigidos pelo enunciado."""
         eventos = []
-        elegiveis = [jid for jid, j in self.jobs.items()
+        mais_antigo = self._jobs_mais_antigos_por_tarefa()
+        elegiveis = [jid for jid, j in self.jobs.items() if jid in mais_antigo
                      if j['estado'] in ('pronta', 'executando')]
         incumbentes = {cpu.get('job') for cpu in self.cpus if cpu.get('job') is not None}
         elegiveis.sort(key=lambda jid: self._chave_job(jid, incumbentes))
@@ -719,7 +747,8 @@ class Simulador:
 
     def _substituir_snapshot_atual(self, eventos):
         anterior = self.historico[self.indice_historico]
-        novo = self._criar_snapshot(eventos, anterior.get('blocos_intervalo', []))
+        novo = self._criar_snapshot(anterior.get('eventos', []) + eventos,
+                                    anterior.get('blocos_intervalo', []))
         self.historico[self.indice_historico] = novo
 
     def _criar_snapshot(self, eventos, blocos_intervalo):
@@ -858,7 +887,7 @@ def exportar_svg(caminho, simulador):
     n_cpus = simulador.num_cpus
 
     largura_tick, altura_linha = 22, 28
-    margem_esq, margem_topo, espaco_entre_secoes = 150, 50, 20
+    margem_esq, margem_topo, espaco_entre_secoes = 150, 50, 26
     n_linhas_legenda = n_tarefas + 6
     altura_legenda = 40 + n_linhas_legenda * 20
 
@@ -899,7 +928,7 @@ def exportar_svg(caminho, simulador):
         if (tk_ - tick_inicial) % 5 == 0:
             x = x_do_tick(tk_)
             partes.append(f'<line x1="{x}" y1="{margem_topo}" x2="{x}" y2="{y_fim_grade}" stroke="#DDDDDD"/>')
-            partes.append(f'<text x="{x}" y="{margem_topo - 10}" font-size="10" fill="#666666" text-anchor="middle">{tk_}</text>')
+            partes.append(f'<text x="{x}" y="{margem_topo + altura_tarefas + 16}" font-size="10" fill="#666666" text-anchor="middle">{tk_}</text>')
 
     # linhas de tarefas (eixo Y: ID decrescente, ou seja, ID menor mais embaixo)
     y_por_tarefa = {}
@@ -1197,8 +1226,8 @@ class Aplicacao(tk.Tk):
     # --------------------------- ações da barra ---------------------------
     def carregar_arquivo(self):
         caminho = filedialog.askopenfilename(
-            title="Selecione o arquivo de configuração (.txt)",
-            filetypes=[("Arquivos de texto", "*.txt"), ("Todos os arquivos", "*.*")],
+            title="Selecione o arquivo de configuração",
+            filetypes=[("Todos os arquivos", "*.*"), ("Configuração (.txt, .cfg)", "*.txt *.cfg")],
         )
         if caminho:
             self._carregar_arquivo_de_caminho(caminho)
@@ -1799,18 +1828,18 @@ class Aplicacao(tk.Tk):
         duracao = max(1, tick_atual - tick_inicial)
 
         largura_total = MARGEM_ESQUERDA + duracao * LARGURA_TICK + 40
-        altura_total = MARGEM_TOPO + (n_tarefas + n_cpus) * ALTURA_LINHA + 20
+        altura_total = MARGEM_TOPO + (n_tarefas + n_cpus) * ALTURA_LINHA + ESPACO_REGUA + 20
         canvas.configure(scrollregion=(0, 0, largura_total, altura_total))
 
         def x_do_tick(tk_):
             return MARGEM_ESQUERDA + (tk_ - tick_inicial) * LARGURA_TICK
 
-        y_fim_grade = MARGEM_TOPO + (n_tarefas + n_cpus) * ALTURA_LINHA
+        y_fim_grade = MARGEM_TOPO + (n_tarefas + n_cpus) * ALTURA_LINHA + ESPACO_REGUA
         for tk_ in range(tick_inicial, tick_atual + 1):
             if (tk_ - tick_inicial) % 5 == 0:
                 x = x_do_tick(tk_)
                 canvas.create_line(x, MARGEM_TOPO, x, y_fim_grade, fill=COR_GRADE)
-                canvas.create_text(x, MARGEM_TOPO - 12, text=str(tk_), font=("Helvetica", 8), fill="#666666")
+                canvas.create_text(x, MARGEM_TOPO + n_tarefas * ALTURA_LINHA + 12, text=str(tk_), font=("Helvetica", 8), fill="#666666")
 
         y_por_tarefa = {}
         for i, tid in enumerate(ids_tarefas):
@@ -1819,7 +1848,7 @@ class Aplicacao(tk.Tk):
             canvas.create_text(MARGEM_ESQUERDA - 10, y + ALTURA_LINHA / 2, text=f"Tarefa {tid}", anchor="e", font=("Helvetica", 10))
             canvas.create_line(MARGEM_ESQUERDA, y + ALTURA_LINHA, largura_total - 40, y + ALTURA_LINHA, fill=COR_GRADE)
 
-        y_cpus_topo = MARGEM_TOPO + n_tarefas * ALTURA_LINHA
+        y_cpus_topo = MARGEM_TOPO + n_tarefas * ALTURA_LINHA + ESPACO_REGUA
         y_por_cpu = {}
         for cidx in range(n_cpus):
             y = y_cpus_topo + cidx * ALTURA_LINHA
