@@ -9,10 +9,10 @@ from configuracao import CarregadorConfiguracao
 from constantes import (
     ALTURA_LINHA, ATIVACOES_POR_TAREFA, COR_ACCENT, COR_ACCENT_HOVER, COR_ACCENT_PRESS,
     COR_BARRA_FERRAMENTAS, COR_BORDA, COR_CHEGADA, COR_CPU_DESLIGADA, COR_DEADLINE_MISS,
-    COR_FUNDO_APP, COR_GRADE, COR_SECUNDARIO, COR_SECUNDARIO_HOVER, COR_SECUNDARIO_PRESS,
+    COR_FIM_QUANTUM, COR_FUNDO_APP, COR_GRADE, COR_PREEMPCAO, COR_SECUNDARIO, COR_SECUNDARIO_HOVER, COR_SECUNDARIO_PRESS,
     COR_SORTEIO, COR_STATUS_BG, COR_STATUS_TEXTO, COR_TEXTO_CLARO, COR_TEXTO_SECUNDARIO,
     ESPACO_REGUA, FONTE_PADRAO, FONTE_STATUS, FONTE_TITULO, LARGURA_TICK, MARGEM_ESQUERDA,
-    MARGEM_TOPO,
+    MARGEM_TOPO, PALETA_CORES_PADRAO,
 )
 from escalonadores import ALGORITMOS_DE_ESCALONAMENTO
 from exportador_svg import ExportadorSVG
@@ -27,13 +27,6 @@ class Aplicacao(tk.Tk):
     legenda e a barra de status. Toda a lógica de escalonamento fica no
     Simulador; aqui só se desenha e se chamam métodos dele.
     """
-
-    # Paleta de cores sugeridas (req. 3.2) para novas tarefas: percorrida em
-    # ordem, pulando cores já usadas.
-    PALETA_CORES_PADRAO = [
-        "#3366CC", "#DC3912", "#FF9900", "#109618", "#990099",
-        "#0099C6", "#DD4477", "#66AA00", "#B82E2E", "#316395",
-    ]
 
     def __init__(self):
         super().__init__()
@@ -329,10 +322,23 @@ class Aplicacao(tk.Tk):
     def _proxima_cor_padrao(self):
         """Sugere (req. 3.2) a primeira cor da paleta ainda não usada."""
         usadas = {t.cor for t in self.simulador.definicoes} if self.simulador else set()
-        for cor in self.PALETA_CORES_PADRAO:
+        for cor in PALETA_CORES_PADRAO:
             if cor not in usadas:
                 return cor
-        return self.PALETA_CORES_PADRAO[len(usadas) % len(self.PALETA_CORES_PADRAO)]
+        return PALETA_CORES_PADRAO[len(usadas) % len(PALETA_CORES_PADRAO)]
+
+    def _cor_disponivel(self, cor, id_ignorado, janela):
+        """Cada tarefa precisa de uma cor diferente (req. 2.1), senão o Gantt
+        fica ambíguo. Mostra o erro e devolve False se outra tarefa já a usa."""
+        for t in self.simulador.definicoes:
+            if t.cor == cor and t.id != id_ignorado:
+                messagebox.showerror(
+                    "Cor já usada",
+                    f"A cor {cor} já pertence à Tarefa {t.id}. Cada tarefa precisa de "
+                    f"uma cor diferente no gráfico de Gantt. Sugestão: {self._proxima_cor_padrao()}.",
+                    parent=janela)
+                return False
+        return True
 
     @staticmethod
     def _ler_campos_numericos(campos, janela):
@@ -415,6 +421,8 @@ class Aplicacao(tk.Tk):
             if cor is None:
                 messagebox.showerror("Erro", "Cor inválida. Use o formato #RRGGBB.", parent=janela)
                 return
+            if not self._cor_disponivel(cor, None, janela):
+                return
             numeros = self._ler_campos_numericos(campos, janela)
             if numeros is None:
                 return
@@ -493,6 +501,8 @@ class Aplicacao(tk.Tk):
             cor = CarregadorConfiguracao.normalizar_cor(campos["cor"].get())
             if cor is None:
                 messagebox.showerror("Erro", "Cor inválida. Use o formato #RRGGBB.", parent=janela)
+                return
+            if not self._cor_disponivel(cor, tarefa.id, janela):
                 return
             numeros = self._ler_campos_numericos(campos, janela)
             if numeros is None:
@@ -835,6 +845,12 @@ class Aplicacao(tk.Tk):
             elif tipo == 'sorteio':
                 canvas.create_text(x, y + ALTURA_LINHA - 6, text="S", fill=COR_SORTEIO,
                                    font=("Helvetica", 10, "bold"))
+            elif tipo == 'preempcao':
+                # triângulo para baixo no topo da linha: a tarefa perdeu a CPU
+                canvas.create_polygon(x - 5, y + 2, x + 5, y + 2, x, y + 11, fill=COR_PREEMPCAO)
+            elif tipo == 'fim_quantum':
+                canvas.create_text(x, y + 9, text="Q", fill=COR_FIM_QUANTUM,
+                                   font=("Helvetica", 9, "bold"))
 
     def desenhar_legenda(self):
         canvas = self.canvas_legenda
@@ -861,6 +877,12 @@ class Aplicacao(tk.Tk):
         x += 170
         canvas.create_rectangle(x, y - 8, x + 16, y + 8, fill=COR_CPU_DESLIGADA, outline="#999999")
         canvas.create_text(x + 20, y, text="CPU desligada", anchor="w", font=("Helvetica", 9))
+        x += 125
+        canvas.create_polygon(x + 3, y - 5, x + 13, y - 5, x + 8, y + 4, fill=COR_PREEMPCAO)
+        canvas.create_text(x + 20, y, text="Preempção", anchor="w", font=("Helvetica", 9))
+        x += 110
+        canvas.create_text(x + 8, y, text="Q", fill=COR_FIM_QUANTUM, font=("Helvetica", 10, "bold"))
+        canvas.create_text(x + 22, y, text="Fim de quantum", anchor="w", font=("Helvetica", 9))
 
         x, y = 10, 62
         canvas.create_polygon(x + 3, y + 6, x + 13, y + 6, x + 8, y - 4, fill=COR_CHEGADA)

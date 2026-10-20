@@ -2,7 +2,7 @@
 """Exportação nativa do Gantt em SVG (requisito 2.4): só concatenação de strings."""
 
 from constantes import (COR_CHEGADA, COR_CPU_DESLIGADA, COR_DEADLINE_MISS,
-                        COR_SORTEIO, COR_TEXTO)
+                        COR_FIM_QUANTUM, COR_PREEMPCAO, COR_SORTEIO, COR_TEXTO)
 
 
 class ExportadorSVG:
@@ -30,7 +30,7 @@ class ExportadorSVG:
 
         largura_tick, altura_linha = 22, 28
         margem_esq, margem_topo, espaco_entre_secoes = 150, 50, 26
-        n_linhas_legenda = n_tarefas + 6
+        n_linhas_legenda = n_tarefas + 8
         altura_legenda = 40 + n_linhas_legenda * 20
 
         largura_grafico = duracao_total * largura_tick
@@ -132,6 +132,11 @@ class ExportadorSVG:
                 partes.append(f'<text x="{x}" y="{y+altura_linha/2+4}" font-size="12" fill="{COR_DEADLINE_MISS}" font-weight="bold" text-anchor="middle">!</text>')
             elif tipo == 'sorteio':
                 partes.append(f'<text x="{x}" y="{y+altura_linha-5}" font-size="11" fill="{COR_SORTEIO}" font-weight="bold" text-anchor="middle">S</text>')
+            elif tipo == 'preempcao':
+                # triângulo para baixo no topo da linha: a tarefa perdeu a CPU
+                partes.append(f'<polygon points="{x-5},{y+2} {x+5},{y+2} {x},{y+10}" fill="{COR_PREEMPCAO}"/>')
+            elif tipo == 'fim_quantum':
+                partes.append(f'<text x="{x}" y="{y+11}" font-size="10" fill="{COR_FIM_QUANTUM}" font-weight="bold" text-anchor="middle">Q</text>')
 
         # ------------------------------ legenda ------------------------------
         y_legenda = y_cpus_topo + altura_cpus + 30
@@ -165,6 +170,12 @@ class ExportadorSVG:
         y_leg += 20
         partes.append(f'<text x="{x_leg+8}" y="{y_leg-2}" font-size="12" fill="{COR_SORTEIO}" font-weight="bold" text-anchor="middle">S</text>')
         partes.append(f'<text x="{x_leg+22}" y="{y_leg}" font-size="11" fill="{COR_TEXTO}">Escolhida por sorteio (desempate)</text>')
+        y_leg += 20
+        partes.append(f'<polygon points="{x_leg+3},{y_leg-10} {x_leg+13},{y_leg-10} {x_leg+8},{y_leg-2}" fill="{COR_PREEMPCAO}"/>')
+        partes.append(f'<text x="{x_leg+22}" y="{y_leg}" font-size="11" fill="{COR_TEXTO}">Preempção (tarefa mais prioritária assumiu a CPU)</text>')
+        y_leg += 20
+        partes.append(f'<text x="{x_leg+8}" y="{y_leg-2}" font-size="12" fill="{COR_FIM_QUANTUM}" font-weight="bold" text-anchor="middle">Q</text>')
+        partes.append(f'<text x="{x_leg+22}" y="{y_leg}" font-size="11" fill="{COR_TEXTO}">Fim de quantum (volta ao fim da fila)</text>')
 
         partes.append('</svg>')
 

@@ -3,7 +3,7 @@
 
 import os
 
-from constantes import MAX_CPUS
+from constantes import MAX_CPUS, PALETA_CORES_PADRAO
 from escalonadores import ALGORITMOS_DE_ESCALONAMENTO
 from tarefa import Tarefa
 
@@ -28,7 +28,9 @@ class CarregadorConfiguracao:
     Tolerado (nunca é erro): maiúsculas/minúsculas, espaços, linhas em
     branco, ';' no fim da linha, BOM no início do arquivo e qualquer caminho.
     Erros estruturais levantam ValueError com o motivo. Aperiódicas
-    (período 0) viram aviso e são ignoradas (req. 4.4).
+    (período 0) viram aviso e são ignoradas (req. 4.4). Cor repetida também
+    vira aviso: o arquivo segue o formato (req. 3.3.7), então troca-se a cor
+    da tarefa repetida por uma livre em vez de recusar o arquivo.
     """
 
     @staticmethod
@@ -131,7 +133,7 @@ class CarregadorConfiguracao:
 
     def _ler_tarefas(self, linhas, avisos):
         tarefas = []
-        ids_vistos, cores_vistas = set(), set()
+        ids_vistos = set()
 
         for numero_linha, linha in enumerate(linhas, start=2):
             if linha.endswith(';'):
@@ -157,8 +159,6 @@ class CarregadorConfiguracao:
             cor = self.normalizar_cor(cor_str)
             if cor is None:
                 raise ValueError(f"Linha {numero_linha}: cor inválida ('{cor_str}').")
-            if cor in cores_vistas:
-                raise ValueError(f"Linha {numero_linha}: a cor {cor} já pertence a outra tarefa.")
 
             try:
                 ingresso = int(ingresso_str)
@@ -206,5 +206,36 @@ class CarregadorConfiguracao:
 
             tarefas.append(Tarefa(id_tarefa, cor, ingresso, duracao, periodo, prazo, eventos))
             ids_vistos.add(id_tarefa)
-            cores_vistas.add(cor)
+
+        self._resolver_cores_repetidas(tarefas, avisos)
         return tarefas
+
+    @staticmethod
+    def _cor_livre(usadas):
+        """Primeira cor da paleta padrão fora de `usadas`; esgotada a paleta,
+        gera cores determinísticas (sempre as mesmas para o mesmo arquivo)."""
+        for cor in PALETA_CORES_PADRAO:
+            if cor not in usadas:
+                return cor
+        passo = 0
+        while True:
+            passo += 1
+            cor = f"#{(passo * 0x9E3779) & 0xFFFFFF:06X}"
+            if cor not in usadas:
+                return cor
+
+    def _resolver_cores_repetidas(self, tarefas, avisos):
+        """Cada tarefa precisa de uma cor diferente no Gantt (req. 2.1). A
+        primeira tarefa com a cor fica com ela; as seguintes recebem uma cor
+        livre, que também não colide com nenhuma cor escrita no arquivo."""
+        usadas = {t.cor for t in tarefas}
+        vistas = set()
+        for t in tarefas:
+            if t.cor in vistas:
+                nova = self._cor_livre(usadas)
+                avisos.append(
+                    f"Tarefa {t.id}: a cor {t.cor} já pertence a outra tarefa. "
+                    f"Para o Gantt ficar legível ela recebeu a cor {nova}.")
+                t.cor = nova
+                usadas.add(nova)
+            vistas.add(t.cor)

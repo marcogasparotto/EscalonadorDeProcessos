@@ -9,7 +9,10 @@ Programa *standalone* desenvolvido em Python que simula o comportamento de um es
 * **Algoritmos Plugáveis:** Suporte nativo aos algoritmos Rate Monotonic (RM) e Earliest Deadline First (EDF), estruturados por meio de um registro flexível que facilita a inclusão de novas políticas de escalonamento.
 
 
-* **Mecanismo de Quantum:** Implementação de fatia de tempo para garantir justiça (*fairness*) em tarefas de mesma prioridade através de regime de rodízio (*round-robin*).
+* **Mecanismo de Quantum:** Implementação de fatia de tempo para garantir justiça (*fairness*) em tarefas de mesma prioridade através de regime de rodízio (*round-robin*). Quando um job executa `quantum` ticks seguidos e existe outro job pronto com a mesma prioridade do algoritmo (mesmo período no RM, mesmo prazo absoluto no EDF), ele vai para o fim da fila desse nível de prioridade. Sem par de mesma prioridade, ele ganha um quantum novo e continua, para não deixar CPU ociosa nem violar RM/EDF.
+
+
+* **Eventos no Gantt:** chegada, conclusão, estouro de prazo, sorteio, suspensão, preempção (triângulo roxo) e fim de quantum (letra Q azul), todos com legenda na tela e no SVG.
 
 
 * **Modo Passo-a-Passo (Debugger):** Permite avançar e retroceder livremente na linha do tempo, acompanhando o estado dinâmico detalhado de cada tarefa por meio de um painel de controle (*TCB dinâmico*).
@@ -93,6 +96,9 @@ id;cor;ingresso;duracao;periodo;prazo;lista_eventos
 
 
 * **prazo:** Prazo relativo ao instante de liberação para conclusão.
+
+
+* **Cor repetida:** a primeira tarefa fica com a cor; as seguintes recebem uma cor livre da paleta e o usuário é avisado.
 
 
 * **lista_eventos:** Pares de bloqueio no formato `deslocamento:duracao` separados por vírgula (ex: `2:3,7:1`) ou vazio/`-` se não houver.
