@@ -30,7 +30,9 @@ class ExportadorSVG:
 
         largura_tick, altura_linha = 22, 28
         margem_esq, margem_topo, espaco_entre_secoes = 150, 50, 26
-        n_linhas_legenda = n_tarefas + 8
+        # uma linha por tarefa + 3 estados (pronta, suspensa, CPU desligada)
+        # + 6 marcadores de evento, mais uma de folga para o título "Legenda"
+        n_linhas_legenda = n_tarefas + 10
         altura_legenda = 40 + n_linhas_legenda * 20
 
         largura_grafico = duracao_total * largura_tick
