@@ -24,6 +24,15 @@ COR_TEXTO = "#222222"          # texto padrão
 COR_CHEGADA = "#2E7D32"        # marcador de chegada de ativação
 COR_DEADLINE_MISS = "#D32F2F"  # marcador de prazo estourado
 COR_SORTEIO = "#F9A825"        # marcador de desempate por sorteio
+COR_PREEMPCAO = "#6A1B9A"      # marcador de preempção por tarefa mais prioritária
+COR_FIM_QUANTUM = "#1565C0"    # marcador de fim de quantum (rodízio)
+
+# Paleta sugerida (req. 3.2) para novas tarefas e para substituir uma cor
+# repetida no arquivo: percorrida em ordem, pulando as cores já usadas.
+PALETA_CORES_PADRAO = [
+    "#3366CC", "#DC3912", "#FF9900", "#109618", "#990099",
+    "#0099C6", "#DD4477", "#66AA00", "#B82E2E", "#316395",
+]
 
 # ==============================================================================
 # ESTILO DA INTERFACE (ttk): só a "casca" da janela

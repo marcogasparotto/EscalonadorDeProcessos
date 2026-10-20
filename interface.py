@@ -9,10 +9,11 @@ from configuracao import CarregadorConfiguracao
 from constantes import (
     ALTURA_LINHA, ATIVACOES_POR_TAREFA, COR_ACCENT, COR_ACCENT_HOVER, COR_ACCENT_PRESS,
     COR_BARRA_FERRAMENTAS, COR_BORDA, COR_CHEGADA, COR_CPU_DESLIGADA, COR_DEADLINE_MISS,
-    COR_FUNDO_APP, COR_GRADE, COR_SECUNDARIO, COR_SECUNDARIO_HOVER, COR_SECUNDARIO_PRESS,
-    COR_SORTEIO, COR_STATUS_BG, COR_STATUS_TEXTO, COR_TEXTO_CLARO, COR_TEXTO_SECUNDARIO,
+    COR_FIM_QUANTUM, COR_FUNDO_APP, COR_GRADE, COR_PREEMPCAO, COR_SECUNDARIO, COR_SECUNDARIO_HOVER, COR_SECUNDARIO_PRESS,
+    COR_SORTEIO, COR_STATUS_BG, COR_STATUS_TEXTO, COR_TEXTO, COR_TEXTO_CLARO,
+    COR_TEXTO_SECUNDARIO,
     ESPACO_REGUA, FONTE_PADRAO, FONTE_STATUS, FONTE_TITULO, LARGURA_TICK, MARGEM_ESQUERDA,
-    MARGEM_TOPO,
+    MARGEM_TOPO, PALETA_CORES_PADRAO,
 )
 from escalonadores import ALGORITMOS_DE_ESCALONAMENTO
 from exportador_svg import ExportadorSVG
@@ -28,19 +29,22 @@ class Aplicacao(tk.Tk):
     Simulador; aqui só se desenha e se chamam métodos dele.
     """
 
-    # Paleta de cores sugeridas (req. 3.2) para novas tarefas: percorrida em
-    # ordem, pulando cores já usadas.
-    PALETA_CORES_PADRAO = [
-        "#3366CC", "#DC3912", "#FF9900", "#109618", "#990099",
-        "#0099C6", "#DD4477", "#66AA00", "#B82E2E", "#316395",
-    ]
-
     def __init__(self):
         super().__init__()
         self.title("Simulador de SO Multitarefa - Projeto A (v0.6)")
         self.geometry("1280x800")
         self.minsize(1000, 650)
         self.configure(bg=COR_FUNDO_APP)
+
+        # Cores padrão dos widgets tk clássicos. O Tk do macOS em modo escuro
+        # usa texto branco e campos pretos por padrão, o que deixava rótulos
+        # invisíveis sobre o fundo claro da aplicação. Fixar as cores mantém a
+        # interface legível em qualquer tema do sistema.
+        self.option_add("*Label.foreground", COR_TEXTO)
+        for classe in ("Entry", "Text"):
+            self.option_add(f"*{classe}.background", "#FFFFFF")
+            self.option_add(f"*{classe}.foreground", COR_TEXTO)
+            self.option_add(f"*{classe}.insertBackground", COR_TEXTO)
 
         self._configurar_estilo_ttk()
 
@@ -87,8 +91,15 @@ class Aplicacao(tk.Tk):
 
     # --------------------------- montagem da UI ---------------------------
     def _montar_barra_de_ferramentas(self):
-        barra = ttk.Frame(self, style="Toolbar.TFrame", padding=(10, 10))
+        # Duas linhas de botões: numa só linha os últimos botões ficavam fora
+        # da janela em telas de notebook (1280 px), escondendo funções.
+        # Linha 1 = arquivo e controle da simulação; linha 2 = edição e saída.
+        externa = ttk.Frame(self, style="Toolbar.TFrame", padding=(10, 8))
+        externa.pack(side=tk.TOP, fill=tk.X)
+        barra = ttk.Frame(externa, style="Toolbar.TFrame")
         barra.pack(side=tk.TOP, fill=tk.X)
+        barra_edicao = ttk.Frame(externa, style="Toolbar.TFrame")
+        barra_edicao.pack(side=tk.TOP, fill=tk.X, pady=(8, 0))
 
         ttk.Button(barra, text="📂 Carregar arquivo...", style="Accent.TButton",
                    command=self.carregar_arquivo).pack(side=tk.LEFT, padx=(0, 6))
@@ -104,16 +115,15 @@ class Aplicacao(tk.Tk):
                    command=self.retroceder_passo).pack(side=tk.LEFT, padx=6)
         ttk.Button(barra, text="Avançar passo ⏭", style="Secondary.TButton",
                    command=self.avancar_passo).pack(side=tk.LEFT, padx=6)
-        ttk.Separator(barra, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=12)
-        ttk.Button(barra, text="＋ Nova tarefa...", style="Secondary.TButton",
-                   command=self.abrir_nova_tarefa).pack(side=tk.LEFT, padx=6)
-        ttk.Button(barra, text="✎ Editar tarefa...", style="Secondary.TButton",
+        ttk.Button(barra_edicao, text="＋ Nova tarefa...", style="Secondary.TButton",
+                   command=self.abrir_nova_tarefa).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(barra_edicao, text="✎ Editar tarefa...", style="Secondary.TButton",
                    command=self.abrir_editor_de_tarefa).pack(side=tk.LEFT, padx=6)
-        ttk.Button(barra, text="Estado...", style="Secondary.TButton",
+        ttk.Button(barra_edicao, text="Estado...", style="Secondary.TButton",
                    command=self.abrir_editor_de_estado).pack(side=tk.LEFT, padx=6)
-        ttk.Button(barra, text="Métricas...", style="Secondary.TButton",
+        ttk.Button(barra_edicao, text="Métricas...", style="Secondary.TButton",
                    command=self.abrir_relatorio_metricas).pack(side=tk.LEFT, padx=6)
-        ttk.Button(barra, text="💾 Exportar SVG...", style="Secondary.TButton",
+        ttk.Button(barra_edicao, text="💾 Exportar SVG...", style="Secondary.TButton",
                    command=self.exportar_para_svg).pack(side=tk.LEFT, padx=6)
 
     def _montar_area_status(self):
@@ -199,6 +209,7 @@ class Aplicacao(tk.Tk):
         self.desenhar_legenda()
 
         if config.avisos:
+            self.update_idletasks()   # mostra a simulação carregada atrás do aviso
             messagebox.showwarning("Avisos ao carregar o arquivo", "\n".join(config.avisos))
 
     def editar_parametros(self):
@@ -284,6 +295,9 @@ class Aplicacao(tk.Tk):
             messagebox.showerror("Erro na simulação", str(erro))
             return
         self._apos_mudanca_de_estado()
+        # Redesenha antes da caixa modal; senão o Gantt final só aparece
+        # depois que o usuário fecha a mensagem.
+        self.update_idletasks()
         messagebox.showinfo(
             "Simulação concluída",
             f"Simulação concluída no tick {self.simulador.tick}.\n"
@@ -329,10 +343,23 @@ class Aplicacao(tk.Tk):
     def _proxima_cor_padrao(self):
         """Sugere (req. 3.2) a primeira cor da paleta ainda não usada."""
         usadas = {t.cor for t in self.simulador.definicoes} if self.simulador else set()
-        for cor in self.PALETA_CORES_PADRAO:
+        for cor in PALETA_CORES_PADRAO:
             if cor not in usadas:
                 return cor
-        return self.PALETA_CORES_PADRAO[len(usadas) % len(self.PALETA_CORES_PADRAO)]
+        return PALETA_CORES_PADRAO[len(usadas) % len(PALETA_CORES_PADRAO)]
+
+    def _cor_disponivel(self, cor, id_ignorado, janela):
+        """Cada tarefa precisa de uma cor diferente (req. 2.1), senão o Gantt
+        fica ambíguo. Mostra o erro e devolve False se outra tarefa já a usa."""
+        for t in self.simulador.definicoes:
+            if t.cor == cor and t.id != id_ignorado:
+                messagebox.showerror(
+                    "Cor já usada",
+                    f"A cor {cor} já pertence à Tarefa {t.id}. Cada tarefa precisa de "
+                    f"uma cor diferente no gráfico de Gantt. Sugestão: {self._proxima_cor_padrao()}.",
+                    parent=janela)
+                return False
+        return True
 
     @staticmethod
     def _ler_campos_numericos(campos, janela):
@@ -415,6 +442,8 @@ class Aplicacao(tk.Tk):
             if cor is None:
                 messagebox.showerror("Erro", "Cor inválida. Use o formato #RRGGBB.", parent=janela)
                 return
+            if not self._cor_disponivel(cor, None, janela):
+                return
             numeros = self._ler_campos_numericos(campos, janela)
             if numeros is None:
                 return
@@ -493,6 +522,8 @@ class Aplicacao(tk.Tk):
             cor = CarregadorConfiguracao.normalizar_cor(campos["cor"].get())
             if cor is None:
                 messagebox.showerror("Erro", "Cor inválida. Use o formato #RRGGBB.", parent=janela)
+                return
+            if not self._cor_disponivel(cor, tarefa.id, janela):
                 return
             numeros = self._ler_campos_numericos(campos, janela)
             if numeros is None:
@@ -597,12 +628,14 @@ class Aplicacao(tk.Tk):
             return
         janela = tk.Toplevel(self)
         janela.title("Métricas da simulação")
-        janela.geometry("560x460")
+        janela.geometry("820x460")
         janela.configure(bg=COR_FUNDO_APP)
         janela.transient(self)
         tk.Label(janela, text="Métricas de escalonamento", bg=COR_FUNDO_APP,
                  fg=COR_TEXTO_SECUNDARIO, font=FONTE_TITULO).pack(anchor="w", padx=16, pady=(14, 8))
-        texto = tk.Text(janela, wrap="none", font=("Consolas", 9), height=20)
+        # TkFixedFont = fonte monoespaçada do sistema (Consolas não existe no
+        # macOS/Linux e as colunas da tabela ficavam desalinhadas).
+        texto = tk.Text(janela, wrap="none", font="TkFixedFont", height=20)
         texto.insert("1.0", self.simulador.texto_metricas())
         texto.configure(state="disabled")
         texto.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 10))
@@ -718,6 +751,9 @@ class Aplicacao(tk.Tk):
         for tid in sorted(s.tarefas_por_id.keys()):
             et = estado_tarefas[tid]
             estado_legivel = rotulos_estado.get(et['estado'], et['estado'])
+            if et['estado'] == 'nao_chegou' and et['instancias_liberadas'] > 0:
+                # Já teve ativações e espera a próxima liberação periódica.
+                estado_legivel = 'Aguardando'
 
             cpu_texto = "—"
             if et['cpu'] is not None and et['cpu'] < len(cpus):
@@ -774,7 +810,7 @@ class Aplicacao(tk.Tk):
             y = MARGEM_TOPO + i * ALTURA_LINHA
             y_por_tarefa[tid] = y
             canvas.create_text(MARGEM_ESQUERDA - 10, y + ALTURA_LINHA / 2, text=f"Tarefa {tid}",
-                               anchor="e", font=("Helvetica", 10))
+                               anchor="e", font=("Helvetica", 10), fill=COR_TEXTO)
             canvas.create_line(MARGEM_ESQUERDA, y + ALTURA_LINHA, largura_total - 40,
                                y + ALTURA_LINHA, fill=COR_GRADE)
 
@@ -784,7 +820,7 @@ class Aplicacao(tk.Tk):
             y = y_cpus_topo + cidx * ALTURA_LINHA
             y_por_cpu[cidx] = y
             canvas.create_text(MARGEM_ESQUERDA - 10, y + ALTURA_LINHA / 2, text=f"CPU {cidx}",
-                               anchor="e", font=("Helvetica", 10))
+                               anchor="e", font=("Helvetica", 10), fill=COR_TEXTO)
             # fundo cinza = CPU desligada; os blocos coloridos cobrem onde ela estava ligada
             canvas.create_rectangle(
                 MARGEM_ESQUERDA, y + 3, MARGEM_ESQUERDA + duracao * LARGURA_TICK,
@@ -835,8 +871,16 @@ class Aplicacao(tk.Tk):
             elif tipo == 'sorteio':
                 canvas.create_text(x, y + ALTURA_LINHA - 6, text="S", fill=COR_SORTEIO,
                                    font=("Helvetica", 10, "bold"))
+            elif tipo == 'preempcao':
+                # triângulo para baixo no topo da linha: a tarefa perdeu a CPU
+                canvas.create_polygon(x - 5, y + 2, x + 5, y + 2, x, y + 11, fill=COR_PREEMPCAO)
+            elif tipo == 'fim_quantum':
+                canvas.create_text(x, y + 9, text="Q", fill=COR_FIM_QUANTUM,
+                                   font=("Helvetica", 9, "bold"))
 
     def desenhar_legenda(self):
+        # Todo texto do Canvas recebe fill=COR_TEXTO: sem cor explícita, o Tk do
+        # macOS em modo escuro desenha em branco e o texto some no fundo claro.
         canvas = self.canvas_legenda
         canvas.delete("all")
         s = self.simulador
@@ -849,29 +893,35 @@ class Aplicacao(tk.Tk):
         x += 75
         for t in s.definicoes:
             canvas.create_rectangle(x, y - 8, x + 16, y + 8, fill=t.cor, outline="#999999")
-            canvas.create_text(x + 20, y, text=f"Tarefa {t.id}", anchor="w", font=("Helvetica", 9))
+            canvas.create_text(x + 20, y, text=f"Tarefa {t.id}", anchor="w", font=("Helvetica", 9), fill=COR_TEXTO)
             x += 95
 
         x, y = 10, 38
         canvas.create_rectangle(x, y - 8, x + 16, y + 8, fill="white", outline="#999999")
-        canvas.create_text(x + 20, y, text="Pronta (sem cor)", anchor="w", font=("Helvetica", 9))
+        canvas.create_text(x + 20, y, text="Pronta (sem cor)", anchor="w", font=("Helvetica", 9), fill=COR_TEXTO)
         x += 150
         canvas.create_rectangle(x, y - 8, x + 16, y + 8, fill="black", stipple="gray50", outline="#999999")
-        canvas.create_text(x + 20, y, text="Suspensa/bloqueada", anchor="w", font=("Helvetica", 9))
+        canvas.create_text(x + 20, y, text="Suspensa/bloqueada", anchor="w", font=("Helvetica", 9), fill=COR_TEXTO)
         x += 170
         canvas.create_rectangle(x, y - 8, x + 16, y + 8, fill=COR_CPU_DESLIGADA, outline="#999999")
-        canvas.create_text(x + 20, y, text="CPU desligada", anchor="w", font=("Helvetica", 9))
+        canvas.create_text(x + 20, y, text="CPU desligada", anchor="w", font=("Helvetica", 9), fill=COR_TEXTO)
+        x += 125
+        canvas.create_polygon(x + 3, y - 5, x + 13, y - 5, x + 8, y + 4, fill=COR_PREEMPCAO)
+        canvas.create_text(x + 20, y, text="Preempção", anchor="w", font=("Helvetica", 9), fill=COR_TEXTO)
+        x += 110
+        canvas.create_text(x + 8, y, text="Q", fill=COR_FIM_QUANTUM, font=("Helvetica", 10, "bold"))
+        canvas.create_text(x + 22, y, text="Fim de quantum", anchor="w", font=("Helvetica", 9), fill=COR_TEXTO)
 
         x, y = 10, 62
         canvas.create_polygon(x + 3, y + 6, x + 13, y + 6, x + 8, y - 4, fill=COR_CHEGADA)
-        canvas.create_text(x + 20, y, text="Chegada de instância", anchor="w", font=("Helvetica", 9))
+        canvas.create_text(x + 20, y, text="Chegada de instância", anchor="w", font=("Helvetica", 9), fill=COR_TEXTO)
         x += 175
         canvas.create_line(x + 8, y - 6, x + 8, y + 6, fill="black", width=2)
         canvas.create_oval(x + 5, y - 8, x + 11, y - 2, fill="black")
-        canvas.create_text(x + 20, y, text="Conclusão", anchor="w", font=("Helvetica", 9))
+        canvas.create_text(x + 20, y, text="Conclusão", anchor="w", font=("Helvetica", 9), fill=COR_TEXTO)
         x += 110
         canvas.create_oval(x, y - 8, x + 16, y + 8, outline=COR_DEADLINE_MISS, width=2)
-        canvas.create_text(x + 20, y, text="Estouro de prazo", anchor="w", font=("Helvetica", 9))
+        canvas.create_text(x + 20, y, text="Estouro de prazo", anchor="w", font=("Helvetica", 9), fill=COR_TEXTO)
         x += 155
         canvas.create_text(x + 8, y, text="S", fill=COR_SORTEIO, font=("Helvetica", 10, "bold"))
-        canvas.create_text(x + 22, y, text="Escolhida por sorteio", anchor="w", font=("Helvetica", 9))
+        canvas.create_text(x + 22, y, text="Escolhida por sorteio", anchor="w", font=("Helvetica", 9), fill=COR_TEXTO)

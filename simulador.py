@@ -195,15 +195,52 @@ class Simulador:
         self._sincronizar_tcbs()
         return eventos
 
-    def _chave_job(self, jid, incumbentes):
-        """Prioridade do algoritmo seguida dos desempates 1 a 4 (req. 4.3)."""
+    def _prioridade_primaria(self, jid):
+        """Prioridade dada pelo algoritmo escolhido (menor = mais prioritário).
+
+        Vem do registro plugável (req. 4.2): um algoritmo novo registrado passa
+        a valer sem alterar o núcleo da simulação."""
         job = self.jobs[jid]
         tarefa = self.tarefas_por_id[job.tarefa]
-        # Prioridade primária vem do registro plugável (req. 4.2): um algoritmo
-        # novo registrado passa a valer sem alterar o núcleo da simulação.
-        primaria = ALGORITMOS_DE_ESCALONAMENTO[self.algoritmo]['funcao'](tarefa, job)
-        return (primaria, 0 if jid in incumbentes else 1,
+        return ALGORITMOS_DE_ESCALONAMENTO[self.algoritmo]['funcao'](tarefa, job)
+
+    def _chave_job(self, jid, incumbentes):
+        """Prioridade do algoritmo, rodízio do quantum e desempates 1 a 4 (req. 4.3)."""
+        job = self.jobs[jid]
+        tarefa = self.tarefas_por_id[job.tarefa]
+        primaria = self._prioridade_primaria(jid)
+        # Rodízio (quantum): quem esgotou a fatia fica atrás dos jobs de mesma
+        # prioridade que ainda não esgotaram. Entre os que esgotaram, sai
+        # primeiro quem foi para o fim da fila antes (FIFO, como no round-robin).
+        # Isso só reordena empates da prioridade primária, então RM/EDF seguem
+        # valendo entre prioridades diferentes.
+        rodizio = (0, 0) if job.fim_fila_desde is None else (1, job.fim_fila_desde)
+        # Critério 1 (quem já executava fica) só protege quem ainda tem quantum;
+        # sem essa exceção o job que esgotou a fatia nunca sairia da CPU.
+        incumbente = 0 if (jid in incumbentes and job.fim_fila_desde is None) else 1
+        return (primaria, rodizio, incumbente,
                 job.prazo_abs, tarefa.ingresso, tarefa.duracao)
+
+    def _aplicar_quantum(self, elegiveis):
+        """Manda para o fim da fila quem esgotou o quantum (req. 3.3: quantum é o
+        tempo máximo que uma tarefa executa sem ser reescalonada).
+
+        Só faz sentido trocar se existir outro job elegível com a MESMA
+        prioridade primária para revezar. Sem esse par, o job ganha um quantum
+        novo e continua: tirá-lo da CPU deixaria um processador ocioso (req.
+        1.2) ou daria a CPU a alguém menos prioritário, violando RM/EDF."""
+        prioridade = {jid: self._prioridade_primaria(jid) for jid in elegiveis}
+        for jid in elegiveis:
+            job = self.jobs[jid]
+            if job.estado != 'executando' or job.fatia_usada < self.quantum:
+                continue
+            tem_par = any(outro != jid and prioridade[outro] == prioridade[jid]
+                          for outro in elegiveis)
+            if tem_par:
+                if job.fim_fila_desde is None:
+                    job.fim_fila_desde = self.tick
+            else:
+                job.fatia_usada = 0
 
     def _jobs_mais_antigos_por_tarefa(self):
         """Ids das ativações que podem competir por CPU.
@@ -223,11 +260,12 @@ class Simulador:
         return set(mais_antigo.values())
 
     def _escalonar(self):
-        """Aplica RM/EDF e os cinco desempates exigidos pelo enunciado."""
+        """Aplica RM/EDF, o rodízio por quantum e os cinco desempates do enunciado."""
         eventos = []
         mais_antigo = self._jobs_mais_antigos_por_tarefa()
         elegiveis = [jid for jid, j in self.jobs.items()
                      if jid in mais_antigo and j.estado in ('pronta', 'executando')]
+        self._aplicar_quantum(elegiveis)
         incumbentes = {cpu.get('job') for cpu in self.cpus if cpu.get('job') is not None}
         elegiveis.sort(key=lambda jid: self._chave_job(jid, incumbentes))
         vagas = min(self.num_cpus, len(elegiveis))
@@ -264,8 +302,12 @@ class Simulador:
             atribuicoes[idx] = jid
 
         # Preempção: quem executava e não foi selecionado volta para a fila.
+        # O evento diz o motivo, para o Gantt mostrar um símbolo para cada um:
+        # fim do quantum (rodízio) ou chegada de alguém mais prioritário.
         for jid, job in self.jobs.items():
             if job.estado == 'executando' and jid not in selecionados:
+                tipo = 'fim_quantum' if job.fim_fila_desde is not None else 'preempcao'
+                eventos.append({'tipo': tipo, 'tarefa': job.tarefa, 'job': jid})
                 job.estado = 'pronta'
                 job.cpu = None
                 job.execucao_continua_desde = None
@@ -283,6 +325,13 @@ class Simulador:
             if nova_fatia:
                 job.trocas += 1   # troca de contexto: Pronta -> Executando
                 job.execucao_continua_desde = self.tick
+                job.fatia_usada = 0          # entrou na CPU: quantum novo
+                job.fim_fila_desde = None
+            elif job.fim_fila_desde is not None:
+                # Esgotou o quantum mas continua, porque havia CPU para todos
+                # os de mesma prioridade: começa um quantum novo sem troca.
+                job.fatia_usada = 0
+                job.fim_fila_desde = None
 
         self._sincronizar_tcbs()
         return eventos
@@ -299,6 +348,7 @@ class Simulador:
                 job = self.jobs[jid]
                 job.restante -= 1
                 job.tempo_cpu += 1
+                job.fatia_usada += 1          # consome o quantum
                 if job.primeira_execucao is None:
                     job.primeira_execucao = inicio   # tempo de resposta (tr)
                 blocos.append((job.tarefa, idx, inicio, fim, 'executando'))

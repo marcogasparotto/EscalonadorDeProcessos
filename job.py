@@ -25,6 +25,12 @@ class Job:
         self.deadline_perdido = False
         self.motivo_suspensao = None
         self.tempo_cpu = 0               # ticks de CPU já consumidos
+        # Quantum (rodízio entre jobs de mesma prioridade):
+        # fatia_usada conta os ticks executados desde que o job ganhou a CPU;
+        # fim_fila_desde guarda o tick em que ele esgotou o quantum e foi para
+        # o fim da fila do seu nível de prioridade (None = não está no fim).
+        self.fatia_usada = 0
+        self.fim_fila_desde = None
         # métricas do capítulo 6 do livro (Tt, Tw, tr e trocas de contexto)
         self.ingresso = liberacao
         self.conclusao = None
